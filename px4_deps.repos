@@ -1,0 +1,21 @@
+# ---------------------------------------------------------------
+# 第三方相依套件清單（vcstool 格式）
+#
+# 為什麼要有這個檔案？
+#   px4_msgs 是 PX4 官方 repo，我們不把它的原始碼 commit 進來，
+#   但又必須記住「用的是哪一個版本」——版本不對，訊息欄位就對不上，
+#   編譯過了執行時也會出現詭異的資料錯亂。
+#   這個檔案就是那份紀錄。
+#
+# 怎麼用（在 ros2_ws/ 底下執行）：
+#   sudo apt install python3-vcstool     # 只需裝一次
+#   vcs import src < px4_deps.repos
+#
+# 注意 px4_msgs 的分支名稱沒有 "v"（是 release/1.14 不是 release/v1.14），
+# 但 px4_ros_com 有 "v"，這是 PX4 官方自己的不一致，很容易踩到。
+# ---------------------------------------------------------------
+repositories:
+  px4_msgs:
+    type: git
+    url: https://github.com/PX4/px4_msgs.git
+    version: release/1.14

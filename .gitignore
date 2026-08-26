@@ -1,0 +1,19 @@
+# ---------------------------------------------------------------
+# 這個 repo 是一個 ROS 2 package，會被 clone 到 workspace 的 src/ 底下。
+# colcon 的 build/ install/ log/ 產生在 workspace 根目錄，
+# 也就是這個 package 的外面，所以不需要在這裡排除。
+# ---------------------------------------------------------------
+
+# launch 檔是 Python，執行後會產生快取
+__pycache__/
+*.pyc
+
+# 編輯器 / 系統雜項
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# PX4 飛行紀錄
+*.ulg
