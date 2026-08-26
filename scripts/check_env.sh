@@ -17,6 +17,25 @@
 PX4_DIR="${PX4_DIR:-$HOME/PX4-Autopilot}"
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
+# 這個 package 是針對哪個 px4_msgs 版本寫的。
+# 版本不符時「編譯會過、執行才錯亂」，所以要主動比對，不能只檢查存在。
+EXPECT_PX4_MSGS="v1.14.0"
+
+# --- 執行模式 ---------------------------------------------------
+# sitl   : 這台要跑模擬（需要 PX4 原始碼、Gazebo、PX4 的編譯相依）
+# flight : 這台只接真機（上述三項都不需要，檢查會直接跳過）
+MODE="sitl"
+case "${1:-}" in
+    --flight) MODE="flight" ;;
+    --sitl|"") MODE="sitl" ;;
+    -h|--help)
+        echo "用法：$0 [--sitl | --flight]"
+        echo "  --sitl    （預設）這台要跑 Gazebo 模擬，檢查全部項目"
+        echo "  --flight  這台只接真機，跳過模擬專用的項目"
+        exit 0 ;;
+    *) echo "未知參數：$1（用 --help 看說明）"; exit 2 ;;
+esac
+
 MISSING=0
 
 ok()   { echo "  ✓ $1"; }
@@ -27,6 +46,11 @@ echo "==================================================="
 echo " 環境健檢"
 echo " workspace : $WS_DIR"
 echo " PX4       : $PX4_DIR"
+if [ "$MODE" = "flight" ]; then
+    echo " 模式      : 真機（跳過模擬專用項目）"
+else
+    echo " 模式      : SITL 模擬（--flight 可跳過模擬項目）"
+fi
 echo "==================================================="
 
 # --- 1. ROS 2 Humble ---------------------------------------------
@@ -43,7 +67,9 @@ fi
 # PX4 v1.14 的 gz_x500 需要 Garden（gz sim），不是 Classic（gazebo）。
 echo
 echo "[2/6] Gazebo Garden"
-if command -v gz >/dev/null 2>&1; then
+if [ "$MODE" = "flight" ]; then
+    echo "  - 略過（只有跑模擬才需要）"
+elif command -v gz >/dev/null 2>&1; then
     GZ_VER="$(gz sim --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
     case "$GZ_VER" in
         7.*) ok "Garden $GZ_VER" ;;
@@ -74,8 +100,10 @@ fi
 
 # --- 4. PX4-Autopilot --------------------------------------------
 echo
-echo "[4/6] PX4-Autopilot"
-if [ -d "$PX4_DIR" ]; then
+echo "[4/6] PX4-Autopilot 原始碼"
+if [ "$MODE" = "flight" ]; then
+    echo "  - 略過（只有要編譯 SITL 才需要；真機的韌體燒在飛控板上）"
+elif [ -d "$PX4_DIR" ]; then
     PX4_VER="$(git -C "$PX4_DIR" describe --tags 2>/dev/null || echo '未知')"
     ok "原始碼存在（版本 $PX4_VER）"
 
@@ -101,6 +129,9 @@ fi
 # 這幾個缺了會在編譯途中才爆，錯誤訊息還很難懂，所以先查。
 echo
 echo "[5/6] PX4 編譯用的 Python 套件"
+if [ "$MODE" = "flight" ]; then
+    echo "  - 略過（只有要自己編譯 PX4 才需要）"
+else
 # 注意：pyros-genmsg 這個「套件」匯入時的「模組」名稱是 genmsg，不是 pyros_genmsg
 for mod in kconfiglib jinja2 em genmsg jsonschema; do
     if python3 -c "import $mod" >/dev/null 2>&1; then
@@ -109,6 +140,7 @@ for mod in kconfiglib jinja2 em genmsg jsonschema; do
         bad "$mod 缺少" "pip3 install --user kconfiglib jinja2 empy pyros-genmsg jsonschema"
     fi
 done
+fi
 
 # --- 6. workspace 本身 -------------------------------------------
 echo
@@ -121,7 +153,15 @@ fi
 
 if [ -d "$WS_DIR/src/px4_msgs" ]; then
     PX4MSGS_REF="$(git -C "$WS_DIR/src/px4_msgs" describe --tags 2>/dev/null || echo '未知')"
-    ok "px4_msgs 存在（$PX4MSGS_REF）"
+    if [ "$PX4MSGS_REF" = "$EXPECT_PX4_MSGS" ]; then
+        ok "px4_msgs $PX4MSGS_REF（與本 package 相符）"
+    else
+        # 只警告不算缺少：版本不同不代表一定不能用，
+        # 但一定要人來判斷，不能默默放行。
+        warn "px4_msgs 是 $PX4MSGS_REF，本 package 是針對 $EXPECT_PX4_MSGS 寫的" \
+             "版本不符時「編譯會過、執行才錯亂」。先確認真機的 PX4 韌體版本再決定要配合哪一邊；\
+      共用 workspace 請勿直接 vcs import 覆蓋，那會影響其他人（見 README）"
+    fi
 else
     bad "px4_msgs 缺少（本來就不在版控內）" \
         "cd $WS_DIR && vcs import src < px4_deps.repos"
