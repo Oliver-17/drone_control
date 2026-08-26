@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>drone_control</name>
+  <version>0.1.0</version>
+  <description>PX4 v1.14 Offboard 控制節點：單機起飛、懸停、降落（可擴充為多機編隊）</description>
+
+  <maintainer email="oliver.920906@gmail.com">oliver</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- rclcpp: ROS 2 的 C++ 客戶端函式庫 -->
+  <depend>rclcpp</depend>
+  <!-- px4_msgs: PX4 的訊息定義，必須和 PX4 韌體版本對齊（這裡是 release/1.14） -->
+  <depend>px4_msgs</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
