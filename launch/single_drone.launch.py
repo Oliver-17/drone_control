@@ -70,7 +70,7 @@ def generate_launch_description():
         #       所以 ROS namespace 不會影響 topic 訂閱，兩者互不干擾。
         namespace=LaunchConfiguration('vehicle_name'),
         name='offboard_takeoff',
-        output='screen',
+        output='both',      # 'both' = 螢幕與檔案都輸出（檔案存在 ~/.ros/log/）
         emulate_tty=True,
         parameters=[{
             'vehicle_name':       LaunchConfiguration('vehicle_name'),

@@ -41,7 +41,7 @@ def make_node(vehicle_name: str, target_system: int, altitude: float) -> Node:
         executable='offboard_takeoff_node',
         namespace=vehicle_name,
         name='offboard_takeoff',
-        output='screen',
+        output='both',      # 'both' = 螢幕與檔案都輸出（檔案存在 ~/.ros/log/）
         emulate_tty=True,
         parameters=[{
             'vehicle_name':       vehicle_name,
