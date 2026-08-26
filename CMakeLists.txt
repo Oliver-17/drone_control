@@ -43,7 +43,9 @@ install(DIRECTORY launch
 )
 
 # 啟動多機 SITL 的 shell script
-install(PROGRAMS scripts/start_3_px4.sh
+install(PROGRAMS
+  scripts/start_3_px4.sh
+  scripts/check_env.sh
   DESTINATION lib/${PROJECT_NAME}
 )
 
