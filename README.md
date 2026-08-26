@@ -60,13 +60,18 @@ cd ~/ros2_ws && colcon build --packages-select drone_control
 ./src/drone_control/scripts/check_env.sh
 ```
 
-**最需要確認的是 `px4_msgs` 的分支。** 如果那台電腦上是 `main` 或 `release/1.15`，
-欄位定義跟 PX4 v1.14 對不上時**編譯會過、執行才錯亂**（數值變垃圾），極難除錯。
-沒有或版本不對的話：
+**最需要確認的是 `px4_msgs` 的分支**（期望 `release/1.14` @ `ffb6e80`）。
+版本不符時**編譯會過、執行才錯亂**，極難除錯。
+
+`px4_msgs` 不存在的話才直接 import：
 
 ```bash
 cd ~/ros2_ws && vcs import src < src/drone_control/px4_deps.repos
 ```
+
+> ⚠️ **已經存在但版本不同時，先不要 import。** 共用的 workspace 裡
+> `src/px4_msgs` 是大家共用的一份，切版本會影響同學。
+> 處理方式見下方〈共用電腦注意事項〉。
 
 ### 情境 B：全新的電腦
 
@@ -223,8 +228,8 @@ ros2 launch drone_control three_drones.launch.py
 
 ## 共用電腦注意事項
 
-環境已經裝好時，clone 完 `vcs import` + `colcon build` 大約 5 分鐘就能跑。
-以下是多人共用同一台機器時，跟環境無關但更容易出事的幾件事。
+環境已經裝好時，clone 進 `src/` 再 `colcon build --packages-select drone_control`
+大約 5 分鐘就能跑。以下是多人共用同一台機器時，跟環境無關但更容易出事的幾件事。
 
 > 本專案的實際使用情境是**一個飛場、三台飛機、一次一個人輪流用**。
 > 「輪流」不會有同時搶資源的問題，但下面第一項反而更容易中 ——
@@ -273,12 +278,35 @@ PX4_UXRCE_DDS_PORT=9888 make px4_sitl gz_x500        # 終端 2
 > port 的來源是 `ROMFS/px4fmu_common/init.d-posix/rcS:285`，
 > 預設 8888，可由環境變數 `PX4_UXRCE_DDS_PORT` 覆寫。
 
-### px4_msgs 版本要自己確認
+### px4_msgs 版本要先查，不要直接覆蓋
 
 「同學跑過」不代表版本跟你一樣。px4_msgs 若是 `main` 或 `release/1.15`，
 欄位定義跟 PX4 v1.14 對不上時**編譯會過、執行才錯亂**（數值變垃圾），極難除錯。
-你的 workspace 是獨立的，`vcs import` 只會動你自己的 `src/`，
-照 README 步驟做就會拿到正確的 `release/1.14 @ ffb6e80`。
+
+**先查，別急著 import：**
+
+```bash
+git -C ~/ros2_ws/src/px4_msgs describe --tags    # 期望 v1.14.0
+git -C ~/ros2_ws/src/px4_msgs rev-parse --short HEAD   # 期望 ffb6e80
+```
+
+| 結果 | 怎麼辦 |
+|---|---|
+| 就是 `v1.14.0` / `ffb6e80` | 什麼都不用做 |
+| **不存在** | 可以安全 import：`cd ~/ros2_ws && vcs import src < src/drone_control/px4_deps.repos` |
+| **版本不同** | ⚠️ **先不要動**，見下方 |
+
+> ⚠️ 共用的 workspace 裡，`src/px4_msgs` 是**大家共用的一份**。
+> 直接 `vcs import` 會把它切到別的版本，同學的 package 可能就編不過或行為改變。
+> 遇到版本不同時，先跟使用那台電腦的人確認能不能統一到 `release/1.14`；
+> 不方便更動的話，就在自己家目錄另開一個 workspace，不要動公用的那個：
+>
+> ```bash
+> mkdir -p ~/my_ws/src && cd ~/my_ws/src
+> git clone https://github.com/Oliver-17/fanros2_ws.git drone_control
+> cd ~/my_ws && vcs import src < src/drone_control/px4_deps.repos
+> colcon build
+> ```
 
 ---
 
