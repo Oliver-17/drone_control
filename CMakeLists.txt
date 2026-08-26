@@ -46,6 +46,7 @@ install(DIRECTORY launch
 install(PROGRAMS
   scripts/start_3_px4.sh
   scripts/check_env.sh
+  scripts/record_flight.sh
   DESTINATION lib/${PROJECT_NAME}
 )
 
