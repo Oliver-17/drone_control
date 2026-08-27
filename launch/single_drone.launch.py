@@ -56,6 +56,12 @@ def generate_launch_description():
         'hover_duration', default_value='10.0',
         description='到達高度後懸停幾秒')
 
+    topic_suffix_arg = DeclareLaunchArgument(
+        'topic_suffix', default_value='',
+        description='/fmu/out/ topic 的版本後綴。'
+                    'PX4 v1.16+ 用訊息版本化，topic 會變成 …_v1（實測 v1.17.0 是 _v1）；'
+                    'v1.14 沒有這個機制，留空即可。用 ros2 topic list 確認實際名稱')
+
     position_tolerance_arg = DeclareLaunchArgument(
         'position_tolerance', default_value='0.3',
         description='高度到達的容忍值（公尺）。低空測試務必調小：'
@@ -85,6 +91,7 @@ def generate_launch_description():
             'takeoff_altitude':   LaunchConfiguration('takeoff_altitude'),
             'hover_duration':     LaunchConfiguration('hover_duration'),
             'position_tolerance': LaunchConfiguration('position_tolerance'),
+            'topic_suffix':       LaunchConfiguration('topic_suffix'),
         }],
     )
 
@@ -95,5 +102,6 @@ def generate_launch_description():
         takeoff_altitude_arg,
         hover_duration_arg,
         position_tolerance_arg,
+        topic_suffix_arg,
         offboard_node,
     ])

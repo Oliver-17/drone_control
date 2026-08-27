@@ -117,6 +117,8 @@ OffboardTakeoffNode::OffboardTakeoffNode()
   takeoff_altitude_   = this->declare_parameter<double>("takeoff_altitude", 2.0);
   hover_duration_     = this->declare_parameter<double>("hover_duration", 10.0);
   position_tolerance_ = this->declare_parameter<double>("position_tolerance", 0.3);
+  // PX4 v1.16+ 的 /fmu/out/ topic 帶版本後綴，v1.14 沒有。空字串 = 舊版行為。
+  topic_suffix_       = this->declare_parameter<std::string>("topic_suffix", "");
 
   // ---------------------------------------------------------------------------
   // 2) 設定 QoS
@@ -149,11 +151,11 @@ OffboardTakeoffNode::OffboardTakeoffNode()
     ns + "/fmu/in/vehicle_command", px4_pub_qos);
 
   local_position_sub_ = this->create_subscription<VehicleLocalPosition>(
-    ns + "/fmu/out/vehicle_local_position", px4_sub_qos,
+    ns + "/fmu/out/vehicle_local_position" + topic_suffix_, px4_sub_qos,
     std::bind(&OffboardTakeoffNode::onLocalPosition, this, std::placeholders::_1));
 
   vehicle_status_sub_ = this->create_subscription<VehicleStatus>(
-    ns + "/fmu/out/vehicle_status", px4_sub_qos,
+    ns + "/fmu/out/vehicle_status" + topic_suffix_, px4_sub_qos,
     std::bind(&OffboardTakeoffNode::onVehicleStatus, this, std::placeholders::_1));
 
   // ---------------------------------------------------------------------------
@@ -167,6 +169,14 @@ OffboardTakeoffNode::OffboardTakeoffNode()
   RCLCPP_INFO(this->get_logger(), "   topic 前綴     : '%s'%s",
               px4_namespace_.c_str(), px4_namespace_.empty() ? " (單機模式)" : "");
   RCLCPP_INFO(this->get_logger(), "   target_system  : %d", target_system_);
+  // 把完整 topic 名稱印出來：卡在 WAIT_FOR_FCU 時，
+  // 直接拿這兩行去跟 `ros2 topic list` 比對就知道是不是名字錯了。
+  RCLCPP_INFO(this->get_logger(), "   訂閱位置       : %s%s%s",
+              px4_namespace_.c_str(), "/fmu/out/vehicle_local_position",
+              topic_suffix_.c_str());
+  RCLCPP_INFO(this->get_logger(), "   訂閱狀態       : %s%s%s",
+              px4_namespace_.c_str(), "/fmu/out/vehicle_status",
+              topic_suffix_.c_str());
   RCLCPP_INFO(this->get_logger(), "   起飛高度       : %.2f m（相對起飛點，不是絕對高度）",
               takeoff_altitude_);
   RCLCPP_INFO(this->get_logger(), "   懸停時間       : %.1f s", hover_duration_);

@@ -54,6 +54,7 @@ def make_node(vehicle_name: str, target_system: int, altitude: float) -> Node:
             'hover_duration':     10.0,
             # 可從命令列覆寫，低空測試時要調小
             'position_tolerance': LaunchConfiguration('position_tolerance'),
+            'topic_suffix':       LaunchConfiguration('topic_suffix'),
         }],
     )
 
@@ -65,6 +66,10 @@ def generate_launch_description():
                     '容忍值若接近起飛高度，飛機還沒爬上去就會被判定「已到達」，'
                     '建議不超過 takeoff_altitude 的三分之一')
 
-    return LaunchDescription([position_tolerance_arg] + [
+    topic_suffix_arg = DeclareLaunchArgument(
+        'topic_suffix', default_value='',
+        description='/fmu/out/ topic 的版本後綴，PX4 v1.16+ 是 _v1，v1.14 留空')
+
+    return LaunchDescription([position_tolerance_arg, topic_suffix_arg] + [
         make_node(name, sysid, alt) for name, sysid, alt in FLEET
     ])

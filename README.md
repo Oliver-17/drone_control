@@ -14,7 +14,8 @@ ROS 2 Humble + PX4 SITL 的 offboard 控制 package，目標是三機編隊。
 |---|---|
 | Ubuntu | 22.04 |
 | ROS 2 | Humble |
-| PX4-Autopilot | v1.14.0 |
+| PX4-Autopilot（SITL） | v1.14.0 |
+| PX4 韌體（真機 Pix32 v6 / FMUv6C） | **v1.17.0 stable** ⚠️ 與 SITL 不同版 |
 | px4_msgs | `release/1.14` @ `ffb6e80` |
 | Micro XRCE-DDS Agent | v2.4.2 |
 | Gazebo | **Garden 7.9.0**（不是 Classic 11） |
@@ -212,6 +213,7 @@ ros2 launch drone_control single_drone.launch.py
 |---|---|---|
 | `takeoff_altitude` | `0.8` | 起飛高度（公尺），**相對起飛點** |
 | `position_tolerance` | `0.3` | 高度到達的容忍值，**不要超過起飛高度的 1/3** |
+| `topic_suffix` | `''` | `/fmu/out/` 的版本後綴。**PX4 v1.16+ 要填 `_v1`**，v1.14 留空 |
 | `hover_duration` | `10.0` | 到達後懸停秒數 |
 | `vehicle_name` | `MAV1` | 只影響 log 顯示 |
 | `use_namespace` | `false` | PX4 有帶 `PX4_UXRCE_DDS_NS` 時要設 `true` |
@@ -328,6 +330,32 @@ uxrce_dds_client start -t serial -d /dev/ttyS5 -b 921600 -n MAV1
 > **namespace 只能用 `-n` 命令列旗標指定，QGC 裡找不到對應參數。**
 > SITL 用的 `PX4_UXRCE_DDS_NS` 只存在於 `init.d-posix/rcS`，真機那條路徑沒有。
 
+### ⚠️ 先確認 topic 名稱
+
+**PX4 v1.16 起引入「訊息版本化」，`/fmu/out/` 的 topic 會帶 `_vN` 後綴。**
+
+```bash
+ros2 topic list | grep fmu
+```
+
+| 你看到的 | 要加的參數 |
+|---|---|
+| `/MAV1/fmu/out/vehicle_local_position_v1` | `use_namespace:=true topic_suffix:=_v1` |
+| `/fmu/out/vehicle_local_position` | 不用加（v1.14 SITL） |
+
+`/fmu/in/` 的三個 topic（`offboard_control_mode`、`trajectory_setpoint`、`vehicle_command`）
+**兩版名稱相同**，不需要後綴。
+
+> 實測 2026-08-27：飛場的 Pix32 v6 跑 **PX4 v1.17.0 stable**（`ver all` → `HW arch: PX4_FMU_V6C`），
+> topic 是 `/MAV1/fmu/out/vehicle_local_position_v1`。
+>
+> 節點啟動時會把完整 topic 名稱印出來，卡在 `WAIT_FOR_FCU` 時直接拿去跟
+> `ros2 topic list` 比對：
+> ```
+> 訂閱位置       : /MAV1/fmu/out/vehicle_local_position_v1
+> 訂閱狀態       : /MAV1/fmu/out/vehicle_status_v1
+> ```
+
 ### 每次飛行
 
 需要 **2 個終端，兩個都在 Pi4 上**（不是你的筆電）。PX4 已經在飛控裡跑著，不用啟動。
@@ -349,6 +377,8 @@ MicroXRCEAgent serial --dev /dev/ttyUSB0 -b 921600
 source ~/ros2_ws/install/setup.bash
 export ROS_DOMAIN_ID=42
 ros2 launch drone_control single_drone.launch.py \
+    use_namespace:=true \
+    topic_suffix:=_v1 \
     takeoff_altitude:=0.8 \
     position_tolerance:=0.2
 ```
@@ -624,3 +654,7 @@ ROS 慣例是 **ENU** + 機體 **FLU**；PX4 是 **NED** + 機體 **FRD**。
 - [ ] `/fleet/status` 編隊同步（三機一起起降）
 - [ ] `mocap_px4_bridge`：OptiTrack VRPN → `/fmu/in/vehicle_visual_odometry`
 - [ ] 真機（Pix32 v6 + Pi4，Agent 走 serial）
+- [ ] **開發環境升級到 v1.17**（真機已是 v1.17.0）：平行安裝 `~/PX4-Autopilot-v1.17`
+      + Gazebo Harmonic（與 Garden 可共存）+ `~/ros2_ws_v117`，不要覆蓋現有環境
+- [ ] 跟同學喬 `ROS_DOMAIN_ID`：目前同一個 domain 上看得到 MAV1~MAV3，
+      跑三機 launch 會誤觸別人的飛機
