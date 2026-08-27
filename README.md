@@ -182,6 +182,41 @@ colcon build --symlink-install
 
 ---
 
+## 已驗證的行為
+
+記錄「實際測過」與「只是以為會這樣」的差別。沒列在這裡的，就是還沒驗證過。
+
+| 項目 | 驗證方式 | 結果 | 日期 |
+|---|---|---|---|
+| 相對高度起飛 | `takeoff_altitude:=0.5`，看 log 有沒有真的爬升 | ✅ ARM→HOVER 花 2.3 秒，log 顯示 `0.31 → 0.37 → 0.41 m` | 2026-08-27 |
+| 飛手接管偵測 | 懸停中在 `pxh>` 下 `commander mode auto:loiter` | ✅ 立刻 `HOVER -> DONE`，`nav_state=4` | 2026-08-27 |
+| 正常降落不誤判 | 完整流程全程不介入 | ✅ `nav_state=18` 未觸發接管警告 | 2026-08-27 |
+| `topic_suffix` 組出的名稱 | 比對 `ros2 topic list` | ✅ `/MAV1/fmu/out/vehicle_local_position_v1` | 2026-08-27 |
+| 真機單機起飛 | — | ⏳ 未測 | — |
+
+### ⚠️ SITL 不能用 `commander mode posctl` 測接管
+
+`mode_requirements.cpp:76`：
+
+```cpp
+setRequirement(vehicle_status_s::NAVIGATION_STATE_POSCTL, flags.mode_req_manual_control);
+```
+
+**POSCTL / MANUAL / ALTCTL / ACRO / STAB 都需要「手動控制來源」**（遙控器或搖桿）。
+SITL 沒接遙控器，下這些指令會被 PX4 拒絕，只聽到 `notify negative`，
+`nav_state` 完全不變 —— 看起來像「接管偵測失效」，其實是根本沒切成模式。
+
+用不需要遙控器的自動模式測：
+
+| 指令 | `nav_state` | 說明 |
+|---|---|---|
+| `commander mode auto:loiter` | 4 | **推薦**，原地懸停 |
+| `commander mode auto:rtl` | 5 | 會飛回起飛點 |
+
+> 真機上飛手有遙控器，`posctl` / `stabilized` 都能切，這個限制只影響模擬測試。
+
+---
+
 ## 執行：模擬 (SITL) — 單機
 
 需要 **3 個終端**，順序不能顛倒。
