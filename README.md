@@ -33,7 +33,8 @@ ROS 2 Humble + PX4 SITL 的 offboard 控制 package，目標是三機編隊。
 | `launch/single_drone.launch.py` | 單機 |
 | `launch/three_drones.launch.py` | 三機（MAV1 / MAV2 / MAV3） |
 | `scripts/start_3_px4.sh` | 一次啟動三台 PX4 SITL |
-| `scripts/check_env.sh` | 環境健檢，唯讀 |
+| `scripts/check_env.sh` | 環境健檢，唯讀。真機用 `--flight` |
+| `scripts/record_flight.sh` | 用 `ros2 bag` 錄飛行資料，事後比對指令與實際 |
 | `px4_deps.repos` | 記錄 px4_msgs 版本，供 `vcs import` 還原 |
 
 ---
@@ -167,12 +168,25 @@ colcon build --symlink-install
 
 ---
 
-## 執行：單機
+## 執行：總覽
 
-需要 **3 個終端**。
+| 情境 | 終端數 | PX4 跑在哪 | Agent 連線方式 | 狀態 |
+|---|---|---|---|---|
+| 模擬 · 單機 | 3 | 你的電腦 | UDP 8888 | ✅ 已驗證 |
+| 模擬 · 三機 | 3 | 你的電腦 ×3 | UDP 8888（共用） | ✅ 已驗證 |
+| 實機 · 單機 | 2 | Pix32 v6 | 序列埠 | ⏳ 待測 |
+| 實機 · 三機 | 2 | Pix32 v6 ×3 | 序列埠 ×3 | ⛔ 尚未開始 |
+
+> **不論哪個情境，控制節點的程式碼完全相同。** 差別只在「PX4 從哪裡來」。
+
+---
+
+## 執行：模擬 (SITL) — 單機
+
+需要 **3 個終端**，順序不能顛倒。
 
 ```bash
-# 終端 1 — Micro XRCE-DDS Agent（PX4 與 ROS 2 之間的翻譯官，UDP 8888）
+# 終端 1 — Micro XRCE-DDS Agent（PX4 與 ROS 2 之間的翻譯官）
 source /opt/ros/humble/setup.bash
 MicroXRCEAgent udp4 -p 8888
 ```
@@ -183,46 +197,249 @@ cd ~/PX4-Autopilot
 make px4_sitl gz_x500
 ```
 
+**檢查點**：看到 `pxh>` 提示字元後，回終端 1 應該出現 `create_topic … vehicle_local_position`。
+沒出現就是沒連上，不要往下走。
+
 ```bash
 # 終端 3 — 控制節點
 source ~/ros2_ws/install/setup.bash
 ros2 launch drone_control single_drone.launch.py
 ```
 
-### 單機可選參數
+### 可選參數
+
+| 參數 | 預設 | 說明 |
+|---|---|---|
+| `takeoff_altitude` | `0.8` | 起飛高度（公尺），**相對起飛點** |
+| `position_tolerance` | `0.3` | 高度到達的容忍值，**不要超過起飛高度的 1/3** |
+| `hover_duration` | `10.0` | 到達後懸停秒數 |
+| `vehicle_name` | `MAV1` | 只影響 log 顯示 |
+| `use_namespace` | `false` | PX4 有帶 `PX4_UXRCE_DDS_NS` 時要設 `true` |
+| `target_system` | `1` | MAVLink system id = PX4 instance + 1 |
+
+低空測試（飛場空間有限時）：
 
 ```bash
 ros2 launch drone_control single_drone.launch.py \
-    vehicle_name:=MAV1 \
-    use_namespace:=true \
-    takeoff_altitude:=2.0 \
-    hover_duration:=10.0
+    takeoff_altitude:=0.5 \
+    position_tolerance:=0.15
 ```
+
+拉高測試：
+
+```bash
+ros2 launch drone_control single_drone.launch.py \
+    takeoff_altitude:=2.0 \
+    hover_duration:=15.0
+```
+
+### 停止
+
+```bash
+pkill -x px4 ; pkill -f "gz sim"
+```
+
+> 第二行**必須用 `-f`**：`gz` 是 Ruby 包裝腳本，行程名是 `ruby`，`-x` 永遠抓不到。
 
 ---
 
-## 執行：三機（MAV1 / MAV2 / MAV3）
+## 執行：模擬 (SITL) — 三機
 
-需要 **3 個終端**。
+需要 **3 個終端**。終端 1 的 Agent 跟單機完全一樣，**一個 Agent 服務三台**。
 
 ```bash
-# 終端 1 — Agent（同上，一個 Agent 服務三台）
+# 終端 1 — Agent
 source /opt/ros/humble/setup.bash
 MicroXRCEAgent udp4 -p 8888
 ```
 
 ```bash
-# 終端 2 — 一次啟動三台 PX4（會等到三台都就緒才印出 banner）
+# 終端 2 — 一次啟動三台 PX4（腳本會逐台確認就緒才起下一台）
 ~/ros2_ws/src/drone_control/scripts/start_3_px4.sh
+
+# 電腦跑不動時關掉畫面：
+HEADLESS=1 ~/ros2_ws/src/drone_control/scripts/start_3_px4.sh
 ```
 
+**等它印出這段才可以往下走：**
+
+```
+==================================================
+ 三台全部就緒 — 現在可以去終端 3 跑：
+==================================================
+```
+
+> ⚠️ **提早跑終端 3 會出事**：先連上的那台會自己起飛，
+> 另外兩台還卡在等 PX4，三台動作完全錯開。
+
 ```bash
-# 終端 3 — 等終端 2 印出「三台全部就緒」再執行
+# 終端 3 — 控制節點
 source ~/ros2_ws/install/setup.bash
 ros2 launch drone_control three_drones.launch.py
 ```
 
-三台的 namespace / MAV_SYS_ID / 起飛高度定義在 `three_drones.launch.py` 的 `FLEET` 常數。
+### 三台的對應關係
+
+| 角色 | instance | `PX4_UXRCE_DDS_NS` | topic 前綴 | `MAV_SYS_ID` | 起飛位置 (N,E) | 高度 |
+|---|---|---|---|---|---|---|
+| MAV1 長機 | `-i 0` | `MAV1` | `/MAV1/fmu/…` | 1 | (0, 0) | 2.0 m |
+| MAV2 僚機 | `-i 1` | `MAV2` | `/MAV2/fmu/…` | 2 | (0, 3) | 2.5 m |
+| MAV3 僚機 | `-i 2` | `MAV3` | `/MAV3/fmu/…` | 3 | (0, −3) | 3.0 m |
+
+高度刻意錯開，避免水平漂移時互撞。定義在 `three_drones.launch.py` 的 `FLEET` 常數，
+**飛場高度不夠時要先改小**。容忍值可從命令列覆寫：
+
+```bash
+ros2 launch drone_control three_drones.launch.py position_tolerance:=0.2
+```
+
+> 目前三台是**各自獨立**跑完起飛→懸停→降落，彼此不溝通。
+> 真正的編隊同步還沒實作（見〈待辦〉）。
+
+---
+
+## 執行：實機 — 單機
+
+> ⚠️ **上真機前務必先讀〈真機注意事項〉。** 有一項是程式碼還沒改、會跟飛手搶控制權的。
+
+### 一次性設定（每台飛機只需做一次）
+
+**① QGroundControl 參數**（`Vehicle Setup → Parameters`，改完 `Tools → Reboot Vehicle`）
+
+| 參數 | 值 | 說明 |
+|---|---|---|
+| `UXRCE_DDS_CFG` | `Disabled` | 改用 `extras.txt` 啟動，避免兩個 client 搶序列埠 |
+| `UXRCE_DDS_DOM_ID` | `42` | **必須等於 Pi4 上的 `ROS_DOMAIN_ID`** |
+| `UXRCE_DDS_KEY` | `1` | 多機時每台必須不同且不為 0 |
+| `SER_TEL1_BAUD` | `921600` | 對應你選的 TELEM port |
+| `MAV_SYS_ID` | `1` | 多機時每台必須不同 |
+
+**② 飛控 SD 卡** — 建立 `/fs/microsd/etc/extras.txt`：
+
+```sh
+uxrce_dds_client stop
+uxrce_dds_client start -t serial -d /dev/ttyS5 -b 921600 -n MAV1
+```
+
+> `/dev/ttyS5` 是 **Pix32 v6 (FMUv6C) 的 TELEM 1**，來源
+> `boards/px4/fmu-v6c/default.px4board`：`CONFIG_BOARD_SERIAL_TEL1="/dev/ttyS5"`
+> （TELEM 2 是 `/dev/ttyS3`）。
+>
+> **namespace 只能用 `-n` 命令列旗標指定，QGC 裡找不到對應參數。**
+> SITL 用的 `PX4_UXRCE_DDS_NS` 只存在於 `init.d-posix/rcS`，真機那條路徑沒有。
+
+### 每次飛行
+
+需要 **2 個終端，兩個都在 Pi4 上**（不是你的筆電）。PX4 已經在飛控裡跑著，不用啟動。
+
+```bash
+# 終端 1 — Agent（走序列埠）
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=42
+MicroXRCEAgent serial --dev /dev/ttyUSB0 -b 921600
+```
+
+> **兩個裝置名不要搞混**：`-d /dev/ttyS5` 是**飛控那側**（寫在 extras.txt 裡），
+> `--dev /dev/ttyUSB0` 是 **Pi4 這側**。
+> Pi4 的裝置名視接法而定：USB 轉接線通常是 `/dev/ttyUSB0`，
+> 直接接 GPIO UART 是 `/dev/serial0`。插拔前後各跑一次 `ls /dev/tty*` 比對最準。
+
+```bash
+# 終端 2 — 控制節點
+source ~/ros2_ws/install/setup.bash
+export ROS_DOMAIN_ID=42
+ros2 launch drone_control single_drone.launch.py \
+    takeoff_altitude:=0.8 \
+    position_tolerance:=0.2
+```
+
+> **節點必須跑在 Pi4 上，不能跑在筆電上。**
+> `COM_OF_LOSS_T` 預設 **1.0 秒** —— 超過 1 秒沒收到 setpoint 就觸發失效保護。
+> wifi 抖一下就會掉出 Offboard。
+
+### 起飛前檢查
+
+```bash
+export ROS_DOMAIN_ID=42                       # 每個終端都要
+./scripts/check_env.sh --flight               # 真機模式，跳過 Gazebo/PX4 原始碼檢查
+ros2 topic list | grep fmu                    # 應該看得到 /fmu/in/… 與 /fmu/out/…
+ros2 topic echo /fmu/out/vehicle_status --once | grep -E "nav_state|arming_state"
+```
+
+| 檢查 | 期望 |
+|---|---|
+| `ros2 topic list` 看得到 `/fmu/*` | Agent 與飛控連上了 |
+| `arming_state` | `1`（DISARMED） |
+| 遙控器 | 已綁定，Offboard 開關在**關閉**位置 |
+| 電池 | 電壓正常，QGC 無警告 |
+| 螺旋槳 | **先不要裝**，第一次只驗證 topic 通不通 |
+
+### 錄下這次飛行
+
+```bash
+./scripts/record_flight.sh          # 存到 ~/flight_logs/<時間戳>/
+```
+
+---
+
+## 執行：實機 — 三機（尚未測試）
+
+> ⛔ **還沒開始。** 先把實機單機跑穩再進到這裡。
+> 以下只是把已知的設定差異記下來，**未經驗證**。
+
+### 三台的參數（其餘與單機相同）
+
+| 參數 | MAV1 | MAV2 | MAV3 |
+|---|---|---|---|
+| `UXRCE_DDS_KEY` | 1 | 2 | 3 |
+| `MAV_SYS_ID` | 1 | 2 | 3 |
+| `UXRCE_DDS_DOM_ID` | 42 | 42 | 42 |
+| `extras.txt` 的 `-n` | `MAV1` | `MAV2` | `MAV3` |
+
+> `UXRCE_DDS_KEY` 的官方說明：*"must be different from zero. In a single agent -
+> multi client configuration, each client must have a unique session key."*
+> **三台撞 key，Agent 會當成同一台，topic 直接亂掉。**
+
+### 未解決的問題
+
+- **一個 Agent 還是三個？** 模擬時三台 PX4 共用一個 UDP Agent，
+  但真機是三條獨立的序列埠。可能要在 Pi4 上跑三個 Agent（各自 `--dev`），
+  或每台飛機配一台 Pi4。**尚未確認。**
+- **三台的起飛高度**要依飛場淨空高度重新設定，`FLEET` 裡的 2.0/2.5/3.0 是模擬用的。
+- **編隊同步**還沒實作，目前三台各飛各的。
+
+---
+
+## 真機注意事項
+
+### ⚠️ 程式碼待修：會跟飛手搶控制權
+
+`handleRequestOffboard()`（`src/offboard_takeoff_node.cpp:315`）在切模式失敗時**會自動重試**。
+
+模擬沒有遙控器，這個設計沒問題。但真機上飛手撥開關想拿回控制時，
+**節點會把模式又切回 Offboard** —— 這是會出事的。
+
+> **上真機前必須修掉。** 尚未處理，見〈待辦〉。
+
+### 遙控器要先設好 Offboard 開關
+
+`COM_FLTMODE1` ~ `COM_FLTMODE6` 其中一個設成 **`7`**（Offboard）。
+飛手撥過去才交給程式，撥回來立刻收回控制權。
+
+| 值 | 模式 | | 值 | 模式 |
+|---|---|---|---|---|
+| 0 | Manual | | **7** | **Offboard** |
+| 1 | Altitude | | **8** | **Stabilized** |
+| 2 | Position | | 10 | Takeoff |
+| 4 | Hold | | 11 | Land |
+
+### 建議的推進順序
+
+1. 不裝螺旋槳，只驗證 `ros2 topic list` 看得到 `/fmu/*`
+2. 不裝螺旋槳，跑一次完整流程，看 log 狀態機有沒有走完
+3. 裝螺旋槳、綁繩、`takeoff_altitude:=0.5`
+4. 逐步拉高
+5. 三機
 
 ---
 
@@ -339,13 +556,31 @@ qos.durability_volatile();
 > `ros2 topic echo` 會自動配合對方的 QoS，所以用 echo 測「看起來正常」，
 > 這會誤導你以為問題不在 QoS。
 
-### 高度數值跟實際差了幾十公分
+### 已 ARM、螺旋槳有轉，但飛機不動
 
-`vehicle_local_position.z` 的基準是 **EKF2 原點**，不是地面。
-`gz_x500` 機型 `SENS_EN_BAROSIM 0` / `SENS_EN_GPSSIM 1`，高度來自模擬 GPS，
-原點會落在一個浮動的偏移上（實測 0.08 ~ 1.04 m）。
+**高度基準的問題，已於 2026-08-27 修正。** 若你的版本較舊會遇到：
 
-> 已知議題，尚未修正。修法是起飛前把 `z` 一起鎖進 `takeoff_down_`，改用相對高度。
+`vehicle_local_position.z` 的基準是 **EKF2 原點，不是地面**。實測 SITL 剛開機時
+飛機停在地上，`z` 卻是 `-0.42`。舊版直接用 `-takeoff_altitude_` 當絕對目標，
+於是：
+
+```
+目標 0.5 m，飛機「已在」0.42 m，誤差 0.08 < 容忍值 0.3  →  判定「已到達」
+```
+
+飛機只需爬 8 公分，推力不足以離地，看起來就是「螺旋槳空轉」。
+
+**修法**（已套用）：起飛前把 `z` 一起鎖進 `takeoff_down_`，之後全部改用相對高度。
+
+```cpp
+takeoff_down_    = local_position_.z;                        // 鎖定「地面」
+target_down      = takeoff_down_ - takeoff_altitude_;        // 目標
+current_altitude = takeoff_down_ - local_position_.z;        // 目前高度
+```
+
+> 若仍卡在爬升，多半是 `position_tolerance` 設得太小
+> （氣壓計雜訊約 ±0.15 m）。`handleTakeoff()` **沒有逾時機制**，
+> 會一直懸停在目標高度不降落 —— `Ctrl+C` 讓失效保護接手即可。
 
 ---
 
@@ -362,7 +597,9 @@ ROS 慣例是 **ENU** + 機體 **FLU**；PX4 是 **NED** + 機體 **FRD**。
 
 ## 待辦
 
-- [ ] 高度基準改為相對起飛點
+- [x] 高度基準改為相對起飛點（2026-08-27）
+- [ ] `handleRequestOffboard()` 自動重試會跟飛手搶控制權，上真機前必修
+- [ ] `handleTakeoff()` 加逾時保護
 - [ ] `/fleet/status` 編隊同步（三機一起起降）
 - [ ] `mocap_px4_bridge`：OptiTrack VRPN → `/fmu/in/vehicle_visual_odometry`
 - [ ] 真機（Pix32 v6 + Pi4，Agent 走 serial）
