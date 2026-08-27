@@ -300,7 +300,7 @@ ros2 launch drone_control three_drones.launch.py position_tolerance:=0.2
 
 ## 執行：實機 — 單機
 
-> ⚠️ **上真機前務必先讀〈真機注意事項〉。** 有一項是程式碼還沒改、會跟飛手搶控制權的。
+> ⚠️ **上真機前務必先讀〈真機注意事項〉。**
 
 ### 一次性設定（每台飛機只需做一次）
 
@@ -412,14 +412,35 @@ ros2 topic echo /fmu/out/vehicle_status --once | grep -E "nav_state|arming_state
 
 ## 真機注意事項
 
-### ⚠️ 程式碼待修：會跟飛手搶控制權
+### 飛手接管偵測（已實作）
 
-`handleRequestOffboard()`（`src/offboard_takeoff_node.cpp:315`）在切模式失敗時**會自動重試**。
+節點在每個控制週期開頭都會檢查：**曾經進入過 Offboard，但現在 `nav_state` 已經不是
+Offboard** —— 代表飛手撥開關把控制權拿回去了。
 
-模擬沒有遙控器，這個設計沒問題。但真機上飛手撥開關想拿回控制時，
-**節點會把模式又切回 Offboard** —— 這是會出事的。
+偵測到就**立刻停止一切輸出**（不發心跳、不送指令、直接進 `DONE`），
+PX4 維持飛手選的模式，控制權完整交還。
 
-> **上真機前必須修掉。** 尚未處理，見〈待辦〉。
+```cpp
+const bool pilot_took_over =
+  offboard_confirmed_ &&
+  (state_ != FlightState::LANDING) &&
+  (state_ != FlightState::DONE) &&
+  (vehicle_status_.nav_state != VehicleStatus::NAVIGATION_STATE_OFFBOARD);
+```
+
+> **為什麼非做不可**：沒有這個檢查的話，狀態機會繼續跑，
+> 懸停計時到了就送 `VEHICLE_CMD_NAV_LAND` —— 飛手正在手動飛，
+> 節點卻叫飛機降落。
+>
+> `LANDING` 必須排除：那是節點自己交棒給 `AUTO_LAND`，
+> `nav_state` 變成 18 是預期行為，不是接管。
+
+飛手接管時 log 會出現：
+
+```
+[WARN] 偵測到飛手接管（nav_state=2，已離開 Offboard）。節點立刻停止所有輸出，控制權完全交還飛手。
+[狀態] HOVER -> DONE : 飛手接管，節點中止
+```
 
 ### 遙控器要先設好 Offboard 開關
 
@@ -598,7 +619,7 @@ ROS 慣例是 **ENU** + 機體 **FLU**；PX4 是 **NED** + 機體 **FRD**。
 ## 待辦
 
 - [x] 高度基準改為相對起飛點（2026-08-27）
-- [ ] `handleRequestOffboard()` 自動重試會跟飛手搶控制權，上真機前必修
+- [x] 飛手接管偵測：離開 Offboard 就停止所有輸出（2026-08-27）
 - [ ] `handleTakeoff()` 加逾時保護
 - [ ] `/fleet/status` 編隊同步（三機一起起降）
 - [ ] `mocap_px4_bridge`：OptiTrack VRPN → `/fmu/in/vehicle_visual_odometry`

@@ -161,6 +161,11 @@ private:
   float takeoff_down_{0.0f};
   float takeoff_yaw_{0.0f};
   bool  takeoff_origin_locked_{false};
+
+  // 是否曾經成功進入過 Offboard。
+  // 用途：區分「還沒切進去」和「切進去之後又被踢出來」。
+  // 後者代表飛手撥了遙控器開關把控制權拿回去，節點必須立刻收手。
+  bool  offboard_confirmed_{false};
 };
 
 }  // namespace drone_control

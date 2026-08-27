@@ -199,6 +199,37 @@ void OffboardTakeoffNode::controlLoop()
   ++loop_count_;
 
   // ---------------------------------------------------------------------------
+  // 飛手接管偵測 —— 真機安全機制，優先於所有其他邏輯
+  //
+  //   條件：曾經成功進入 Offboard，但現在 nav_state 已經不是 Offboard 了。
+  //   代表飛手撥了遙控器開關，主動把控制權拿回去。
+  //
+  //   為什麼一定要處理？如果放著不管，狀態機會繼續往下跑，
+  //   懸停計時到了就送 VEHICLE_CMD_NAV_LAND —— 飛手正在手動飛，
+  //   我們卻叫飛機降落。這是搶控制權，真機上會出事。
+  //
+  //   收手的方式是「什麼都不做」：不發心跳、不送指令、直接進 DONE。
+  //   PX4 會維持飛手選的模式，控制權完整交還。
+  //
+  //   LANDING 要排除：那是我們自己交棒給 AUTO_LAND，
+  //   nav_state 本來就會變成 18，不是飛手接管。
+  // ---------------------------------------------------------------------------
+  const bool pilot_took_over =
+    offboard_confirmed_ &&
+    (state_ != FlightState::LANDING) &&
+    (state_ != FlightState::DONE) &&
+    (vehicle_status_.nav_state != VehicleStatus::NAVIGATION_STATE_OFFBOARD);
+
+  if (pilot_took_over) {
+    RCLCPP_WARN(this->get_logger(),
+                "偵測到飛手接管（nav_state=%d，已離開 Offboard）。"
+                "節點立刻停止所有輸出，控制權完全交還飛手。",
+                vehicle_status_.nav_state);
+    transitionTo(FlightState::DONE, "飛手接管，節點中止");
+    return;   // 這個 tick 起不再發送任何東西
+  }
+
+  // ---------------------------------------------------------------------------
   // 心跳：只要還在 Offboard 流程中，每個 tick 都必須發送
   //   OffboardControlMode + TrajectorySetpoint 這一「對」訊息。
   //
@@ -208,7 +239,7 @@ void OffboardTakeoffNode::controlLoop()
   //   只發前者沒有目標值、只發後者 PX4 不知道要用哪層 —— 都會被拒絕。
   //
   //   為什麼要「持續」發？
-  //     PX4 若超過 0.5 秒收不到心跳，會判定地面站失聯，
+  //     PX4 若超過 COM_OF_LOSS_T（預設 1.0 秒）收不到心跳，會判定地面站失聯，
   //     自動跳出 Offboard 進入 failsafe（通常是 Hold 或 Land）。
   //     所以就算飛機已經到位在懸停，心跳也不能停。
   //
@@ -323,6 +354,8 @@ void OffboardTakeoffNode::handleRequestOffboard()
   if (vehicle_status_.nav_state == VehicleStatus::NAVIGATION_STATE_OFFBOARD) {
     RCLCPP_INFO(this->get_logger(), "PX4 已進入 Offboard 模式 (nav_state=%d)",
                 vehicle_status_.nav_state);
+    // 記錄「確實進去過」。之後 nav_state 再離開 Offboard 就是飛手接管。
+    offboard_confirmed_ = true;
     transitionTo(FlightState::ARMING, "準備 Arm");
     return;
   }
