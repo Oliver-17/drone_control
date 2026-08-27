@@ -49,12 +49,18 @@ def generate_launch_description():
                     '所以 instance 0 (MAV1) = 1')
 
     takeoff_altitude_arg = DeclareLaunchArgument(
-        'takeoff_altitude', default_value='2.0',
+        'takeoff_altitude', default_value='0.8',
         description='起飛高度（公尺，正值；程式內部會轉成 NED 的負 z）')
 
     hover_duration_arg = DeclareLaunchArgument(
         'hover_duration', default_value='10.0',
         description='到達高度後懸停幾秒')
+
+    position_tolerance_arg = DeclareLaunchArgument(
+        'position_tolerance', default_value='0.3',
+        description='高度到達的容忍值（公尺）。低空測試務必調小：'
+                    '容忍值若接近起飛高度，飛機還沒爬上去就會被判定「已到達」，'
+                    '建議不超過 takeoff_altitude 的三分之一')
 
     # use_namespace 為 true 時，px4_namespace = "/" + vehicle_name；否則為空字串
     px4_namespace = PythonExpression([
@@ -78,7 +84,7 @@ def generate_launch_description():
             'target_system':      LaunchConfiguration('target_system'),
             'takeoff_altitude':   LaunchConfiguration('takeoff_altitude'),
             'hover_duration':     LaunchConfiguration('hover_duration'),
-            'position_tolerance': 0.3,
+            'position_tolerance': LaunchConfiguration('position_tolerance'),
         }],
     )
 
@@ -88,5 +94,6 @@ def generate_launch_description():
         target_system_arg,
         takeoff_altitude_arg,
         hover_duration_arg,
+        position_tolerance_arg,
         offboard_node,
     ])

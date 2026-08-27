@@ -154,6 +154,11 @@ private:
   // 每台都應該「在自己的正上方」垂直爬升，而不是全部飛到原點。
   float takeoff_north_{0.0f};
   float takeoff_east_{0.0f};
+  // 起飛當下的 NED z，等同於「地面」在 EKF 座標系裡的位置。
+  // 為什麼要存：z=0 是 EKF 的原點，不保證等於地面。實測 SITL 剛開機時
+  // 飛機明明停在地上，z 卻是 -0.42。所有高度都改用「相對這個點」計算，
+  // 才不會被原點偏移騙到（真機上偏移可能更大）。
+  float takeoff_down_{0.0f};
   float takeoff_yaw_{0.0f};
   bool  takeoff_origin_locked_{false};
 };

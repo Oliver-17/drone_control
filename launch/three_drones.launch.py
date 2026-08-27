@@ -24,6 +24,8 @@ three_drones.launch.py — 三機同時起飛（MAV1 長機 + MAV2/MAV3 僚機�
 """
 
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
@@ -50,12 +52,19 @@ def make_node(vehicle_name: str, target_system: int, altitude: float) -> Node:
             'target_system':      target_system,
             'takeoff_altitude':   altitude,
             'hover_duration':     10.0,
-            'position_tolerance': 0.3,
+            # 可從命令列覆寫，低空測試時要調小
+            'position_tolerance': LaunchConfiguration('position_tolerance'),
         }],
     )
 
 
 def generate_launch_description():
-    return LaunchDescription([
+    position_tolerance_arg = DeclareLaunchArgument(
+        'position_tolerance', default_value='0.3',
+        description='高度到達的容忍值（公尺）。低空測試務必調小：'
+                    '容忍值若接近起飛高度，飛機還沒爬上去就會被判定「已到達」，'
+                    '建議不超過 takeoff_altitude 的三分之一')
+
+    return LaunchDescription([position_tolerance_arg] + [
         make_node(name, sysid, alt) for name, sysid, alt in FLEET
     ])

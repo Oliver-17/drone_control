@@ -167,8 +167,8 @@ OffboardTakeoffNode::OffboardTakeoffNode()
   RCLCPP_INFO(this->get_logger(), "   topic 前綴     : '%s'%s",
               px4_namespace_.c_str(), px4_namespace_.empty() ? " (單機模式)" : "");
   RCLCPP_INFO(this->get_logger(), "   target_system  : %d", target_system_);
-  RCLCPP_INFO(this->get_logger(), "   起飛高度       : %.2f m (NED z = %.2f)",
-              takeoff_altitude_, -takeoff_altitude_);
+  RCLCPP_INFO(this->get_logger(), "   起飛高度       : %.2f m（相對起飛點，不是絕對高度）",
+              takeoff_altitude_);
   RCLCPP_INFO(this->get_logger(), "   懸停時間       : %.1f s", hover_duration_);
   RCLCPP_INFO(this->get_logger(), "==============================================");
   RCLCPP_INFO(this->get_logger(), "[狀態] WAIT_FOR_FCU — 等待 PX4 位置資料…");
@@ -267,7 +267,8 @@ void OffboardTakeoffNode::handleWaitForFcu()
   }
 
   RCLCPP_INFO(this->get_logger(),
-              "PX4 連線正常！目前位置 NED = (%.2f, %.2f, %.2f)，離地高度 %.2f m",
+              "PX4 連線正常！目前位置 NED = (%.2f, %.2f, %.2f)"
+              "，相對 EKF 原點 %.2f m（原點不等於地面，僅供參考）",
               local_position_.x, local_position_.y, local_position_.z,
               -local_position_.z);
 
@@ -284,17 +285,22 @@ void OffboardTakeoffNode::handleStreamSetpoint()
   if (!takeoff_origin_locked_) {
     takeoff_north_ = local_position_.x;
     takeoff_east_  = local_position_.y;
+    // 連 z 一起鎖：這一刻飛機還在地上，所以這個 z 就是「地面」。
+    // 少了這行，-takeoff_altitude_ 會被當成絕對目標，而 EKF 原點的偏移
+    // 可能已經超過容忍值，導致程式判定「早就到了」而根本不爬升。
+    takeoff_down_  = local_position_.z;
     takeoff_yaw_   = local_position_.heading;   // 保持目前機頭方向，不要無謂旋轉
     takeoff_origin_locked_ = true;
     RCLCPP_INFO(this->get_logger(),
-                "鎖定起飛點：N=%.2f, E=%.2f, yaw=%.1f°",
-                takeoff_north_, takeoff_east_, takeoff_yaw_ * 180.0f / M_PI);
+                "鎖定起飛點：N=%.2f, E=%.2f, D=%.2f, yaw=%.1f°",
+                takeoff_north_, takeoff_east_, takeoff_down_,
+                takeoff_yaw_ * 180.0f / M_PI);
   }
 
   // 預熱階段的 setpoint 就是「停在原地、原本的高度」，
   // 因為此時還沒 Arm，PX4 只是在確認我們的串流有沒有穩定，不會真的動。
   publishTrajectorySetpoint(takeoff_north_, takeoff_east_,
-                            local_position_.z, takeoff_yaw_);
+                            takeoff_down_, takeoff_yaw_);
 
   if (loop_count_ >= kWarmupLoops) {
     RCLCPP_INFO(this->get_logger(), "已連續發送 %d 次 setpoint（約 1 秒），可以切模式了",
@@ -310,7 +316,7 @@ void OffboardTakeoffNode::handleRequestOffboard()
 {
   // 心跳持續（尚未起飛，維持原地原高度）
   publishTrajectorySetpoint(takeoff_north_, takeoff_east_,
-                            local_position_.z, takeoff_yaw_);
+                            takeoff_down_, takeoff_yaw_);
 
   // 先檢查是否已經切成功。
   // nav_state == NAVIGATION_STATE_OFFBOARD (=14) 才算數。
@@ -350,7 +356,7 @@ void OffboardTakeoffNode::handleRequestOffboard()
 void OffboardTakeoffNode::handleArming()
 {
   publishTrajectorySetpoint(takeoff_north_, takeoff_east_,
-                            local_position_.z, takeoff_yaw_);
+                            takeoff_down_, takeoff_yaw_);
 
   // arming_state == ARMING_STATE_ARMED (=2) 代表馬達真的解鎖了
   if (vehicle_status_.arming_state == VehicleStatus::ARMING_STATE_ARMED) {
@@ -382,13 +388,13 @@ void OffboardTakeoffNode::handleArming()
 // -----------------------------------------------------------------------------
 void OffboardTakeoffNode::handleTakeoff()
 {
-  // 這裡就是 NED 的實戰：目標高度 2.0 公尺 -> z 要填 -2.0
-  const float target_down = -static_cast<float>(takeoff_altitude_);
+  // NED 往下為正，所以「從起飛點往上爬 h 公尺」= 起飛點的 z 再減去 h
+  const float target_down = takeoff_down_ - static_cast<float>(takeoff_altitude_);
 
   publishTrajectorySetpoint(takeoff_north_, takeoff_east_, target_down, takeoff_yaw_);
 
-  // 目前離地高度 = -z（因為 z 往下為正）
-  const float current_altitude = -local_position_.z;
+  // 目前相對起飛點的高度 = 起飛點的 z 減去現在的 z（z 往下為正）
+  const float current_altitude = takeoff_down_ - local_position_.z;
   const float altitude_error = std::fabs(current_altitude -
                                          static_cast<float>(takeoff_altitude_));
 
@@ -423,7 +429,7 @@ void OffboardTakeoffNode::handleTakeoff()
 // -----------------------------------------------------------------------------
 void OffboardTakeoffNode::handleHover()
 {
-  const float target_down = -static_cast<float>(takeoff_altitude_);
+  const float target_down = takeoff_down_ - static_cast<float>(takeoff_altitude_);
 
   // 懸停 = 持續送同一個位置 setpoint。心跳一停就會掉出 Offboard，所以不能偷懶。
   publishTrajectorySetpoint(takeoff_north_, takeoff_east_, target_down, takeoff_yaw_);
@@ -432,7 +438,8 @@ void OffboardTakeoffNode::handleHover()
 
   if (loop_count_ % kLoopRateHz == 0) {
     RCLCPP_INFO(this->get_logger(), "懸停中… %d / %.0f 秒（高度 %.2f m）",
-                loop_count_ / kLoopRateHz, hover_duration_, -local_position_.z);
+                loop_count_ / kLoopRateHz, hover_duration_,
+                takeoff_down_ - local_position_.z);
   }
 
   if (loop_count_ >= hover_loops) {
@@ -469,7 +476,7 @@ void OffboardTakeoffNode::handleLanding()
 
   if (loop_count_ % kLoopRateHz == 0) {
     RCLCPP_INFO(this->get_logger(), "降落中… 高度 %.2f m，nav_state=%d，arming_state=%d",
-                -local_position_.z, vehicle_status_.nav_state,
+                takeoff_down_ - local_position_.z, vehicle_status_.nav_state,
                 vehicle_status_.arming_state);
   }
 
