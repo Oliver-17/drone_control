@@ -117,8 +117,6 @@ OffboardTakeoffNode::OffboardTakeoffNode()
   takeoff_altitude_   = this->declare_parameter<double>("takeoff_altitude", 2.0);
   hover_duration_     = this->declare_parameter<double>("hover_duration", 10.0);
   position_tolerance_ = this->declare_parameter<double>("position_tolerance", 0.3);
-  // PX4 v1.16+ 的 /fmu/out/ topic 帶版本後綴，v1.14 沒有。空字串 = 舊版行為。
-  topic_suffix_       = this->declare_parameter<std::string>("topic_suffix", "");
 
   // ---------------------------------------------------------------------------
   // 2) 設定 QoS
@@ -141,6 +139,19 @@ OffboardTakeoffNode::OffboardTakeoffNode()
   // ---------------------------------------------------------------------------
   const std::string ns = px4_namespace_;   // "" 或 "/px4_1"
 
+  // PX4 v1.16 起導入「訊息版本化」：凡是放在 PX4 原始碼 msg/versioned/ 底下的
+  // 訊息，uxrce_dds_client 會在 topic 名稱後面自動接上 _vN。
+  // 這個後綴「不會」出現在 dds_topics.yaml 裡，只有把 PX4 跑起來用
+  // `ros2 topic list` 才看得到真正的名字 —— 查文件查不到，別浪費時間。
+  //
+  // 為什麼是逐一寫死、而不是統一補一個後綴：後綴是「逐訊息」決定的，
+  // 不是「逐方向」決定的。實測 PX4 v1.17.0，本檔用到的五個 topic 裡
+  // 只有這兩個 /fmu/out/ 帶 _v1，三個 /fmu/in/ 都不帶，無腦全加會全錯。
+  //
+  // 若哪天要接回 PX4 v1.14（還沒有版本化機制），把這兩行的 "_v1" 拿掉即可。
+  const std::string local_position_topic = ns + "/fmu/out/vehicle_local_position_v1";
+  const std::string vehicle_status_topic = ns + "/fmu/out/vehicle_status_v1";
+
   offboard_mode_pub_ = this->create_publisher<OffboardControlMode>(
     ns + "/fmu/in/offboard_control_mode", px4_pub_qos);
 
@@ -151,11 +162,11 @@ OffboardTakeoffNode::OffboardTakeoffNode()
     ns + "/fmu/in/vehicle_command", px4_pub_qos);
 
   local_position_sub_ = this->create_subscription<VehicleLocalPosition>(
-    ns + "/fmu/out/vehicle_local_position" + topic_suffix_, px4_sub_qos,
+    local_position_topic, px4_sub_qos,
     std::bind(&OffboardTakeoffNode::onLocalPosition, this, std::placeholders::_1));
 
   vehicle_status_sub_ = this->create_subscription<VehicleStatus>(
-    ns + "/fmu/out/vehicle_status" + topic_suffix_, px4_sub_qos,
+    vehicle_status_topic, px4_sub_qos,
     std::bind(&OffboardTakeoffNode::onVehicleStatus, this, std::placeholders::_1));
 
   // ---------------------------------------------------------------------------
@@ -171,19 +182,16 @@ OffboardTakeoffNode::OffboardTakeoffNode()
   RCLCPP_INFO(this->get_logger(), "   target_system  : %d", target_system_);
   // 把完整 topic 名稱印出來：卡在 WAIT_FOR_FCU 時，
   // 直接拿這兩行去跟 `ros2 topic list` 比對就知道是不是名字錯了。
-  RCLCPP_INFO(this->get_logger(), "   訂閱位置       : %s%s%s",
-              px4_namespace_.c_str(), "/fmu/out/vehicle_local_position",
-              topic_suffix_.c_str());
-  RCLCPP_INFO(this->get_logger(), "   訂閱狀態       : %s%s%s",
-              px4_namespace_.c_str(), "/fmu/out/vehicle_status",
-              topic_suffix_.c_str());
+  RCLCPP_INFO(this->get_logger(), "   訂閱位置       : %s", local_position_topic.c_str());
+  RCLCPP_INFO(this->get_logger(), "   訂閱狀態       : %s", vehicle_status_topic.c_str());
   RCLCPP_INFO(this->get_logger(), "   起飛高度       : %.2f m（相對起飛點，不是絕對高度）",
               takeoff_altitude_);
   RCLCPP_INFO(this->get_logger(), "   懸停時間       : %.1f s", hover_duration_);
   RCLCPP_INFO(this->get_logger(), "==============================================");
   RCLCPP_INFO(this->get_logger(), "[狀態] WAIT_FOR_FCU — 等待 PX4 位置資料…");
   RCLCPP_INFO(this->get_logger(),
-              "  (若一直卡在這裡，代表 XRCE Agent 沒起來、或 PX4 SITL 沒連上)");
+              "  (若一直卡在這裡：XRCE Agent 沒起來、PX4 沒連上，"
+              "或飛控是 v1.14 這種沒有 _v1 後綴的舊版本 → 拿上面兩行去比對 ros2 topic list)");
 }
 
 // -----------------------------------------------------------------------------

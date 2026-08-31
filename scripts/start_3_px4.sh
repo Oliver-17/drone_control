@@ -24,6 +24,35 @@ if [ ! -x "$BUILD_DIR/bin/px4" ]; then
     exit 1
 fi
 
+# --- 強制 Gazebo 走 NVIDIA 獨顯 -----------------------------------------------
+# 這台筆電是雙顯卡（NVIDIA + AMD 內顯），driver 設定是 PRIME "on-demand"。
+# on-demand 的意思是「預設一律用內顯，除非程式自己要求 offload」——
+# 所以不加下面這兩個變數的話，Gazebo 會整場跑在內顯上。
+# 三機同場時內顯畫不動 → 物理步進被拖慢 → SITL 是 lockstep，PX4 收不到 IMU
+# → `Accel #0 fail: TIMEOUT` → EKF 收斂不了 → 預檢一路失敗。
+# 環境變數會被子程序繼承，所以在這裡 export 一次，PX4 起的 gz sim 就吃得到。
+if command -v nvidia-smi >/dev/null 2>&1; then
+    export __NV_PRIME_RENDER_OFFLOAD=1
+    export __GLX_VENDOR_LIBRARY_NAME=nvidia
+    export __VK_LAYER_NV_optimus=NVIDIA_only   # Gazebo 若走 Vulkan 後端才會用到
+    echo "已啟用 NVIDIA offload（用 nvidia-smi 可確認 gz sim 有出現在程序列表）"
+else
+    echo "找不到 nvidia-smi，維持預設顯示卡"
+fi
+
+# --- 把 gz-transport 綁在回環位址 ------------------------------------------
+# 不設這個的話，gz-transport 會綁到「所有」網路介面，IMU 訊息的傳遞會出現
+# 延遲抖動。SITL 是 lockstep，感測器資料一遲到就會 `Accel #0 fail: TIMEOUT`，
+# 接著 EKF 的姿態與高度估計跟著劣化，起飛後觸發失效保護 RTL，最後翻覆墜毀。
+#
+# 為什麼 `make px4_sitl gz_x500` 不會有這個問題：那條路徑是
+# `cmake -E env PX4_SIM_MODEL=gz_x500 GZ_IP=127.0.0.1 bin/px4`，
+# cmake 幫忙包了這個變數；本腳本直接呼叫 bin/px4，就繞過了那一層。
+#
+# 實測 2026-08-31：加這一行前 Accel TIMEOUT 112~127 次、三台全部墜毀；
+#                  加之後 0 次、穩定懸停降落。
+export GZ_IP=127.0.0.1
+
 # 載入 Gazebo 的模型/世界搜尋路徑（PX4 編譯時自動產生），否則 gz 找不到 x500 模型
 # shellcheck disable=SC1091
 source "$BUILD_DIR/rootfs/gz_env.sh"
@@ -51,6 +80,29 @@ wait_for() {
 
 world_is_up()      { gz topic -l 2>/dev/null | grep -qE "/world/.*/clock"; }
 instance_is_ready() { grep -q "uxrce_dds_client.*vehicle_local_position" "$1"; }
+
+# --- 補上 v1.17 SITL 的預檢參數 ----------------------------------------------
+# v1.17 的機型檔 4001_gz_x500:51 多了 `param set-default NAV_DLL_ACT 2`
+# （v1.14 沒有這行），沒開 QGC 就會 `Preflight Fail: No connection to the GCS`，
+# ARM 永遠不會成功。CBRK_SUPPLY_CHK 則是關掉 SITL 沒有的電源檢查。
+#
+# 為什麼不用 v1.17 新增的 PX4_PARAM_xxx 環境變數：那個在 rcS:129 執行，
+# 機型檔卻在 rcS:233 才被 source，`param set-default` 會蓋掉它 ——
+# CBRK_SUPPLY_CHK 有效（機型檔沒設），NAV_DLL_ACT 無效。實測過。
+#
+# 為什麼要逐台設：每台跑在自己的 instance_$i 工作目錄，參數檔是
+# instance_$i/parameters.bson，跟單機用的 rootfs/parameters.bson 是不同檔案。
+# px4-param 是 PX4 的 client 執行檔，--instance 可指定對哪一台下指令
+# （platforms/posix/src/px4/common/main.cpp:154），不必去搶 console。
+fix_preflight_params() {
+    local i="$1"
+    local param="$BUILD_DIR/bin/px4-param"
+    "$param" --instance "$i" set NAV_DLL_ACT 0        >/dev/null 2>&1 || return 1
+    "$param" --instance "$i" set CBRK_SUPPLY_CHK 894281 >/dev/null 2>&1 || return 1
+    # save 之後會寫進 instance_$i/parameters.bson，下次重跑就不用再設
+    "$param" --instance "$i" save                     >/dev/null 2>&1 || return 1
+    return 0
+}
 
 # --- 清理舊程序 --------------------------------------------------------------
 echo "清掉可能殘留的舊程序…"
@@ -93,6 +145,13 @@ for i in 0 1 2; do
 
     # 等這台真的把 topic 建好，再啟動下一台
     wait_for "$NAME 已連上 XRCE Agent" 90 instance_is_ready "$WORK_DIR/out.log"
+
+    if fix_preflight_params "$i"; then
+        echo "  ✓ $NAME 預檢參數已設定（NAV_DLL_ACT=0, CBRK_SUPPLY_CHK）"
+    else
+        echo "  ⚠ $NAME 預檢參數設定失敗 —— ARM 可能會被擋，手動確認："
+        echo "      $BUILD_DIR/bin/px4-param --instance $i show NAV_DLL_ACT"
+    fi
 done
 
 echo

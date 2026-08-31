@@ -14,14 +14,19 @@ ROS 2 Humble + PX4 SITL 的 offboard 控制 package，目標是三機編隊。
 |---|---|
 | Ubuntu | 22.04 |
 | ROS 2 | Humble |
-| PX4-Autopilot（SITL） | v1.14.0 |
-| PX4 韌體（真機 Pix32 v6 / FMUv6C） | **v1.17.0 stable** ⚠️ 與 SITL 不同版 |
-| px4_msgs | `release/1.14` @ `ffb6e80` |
+| PX4-Autopilot（SITL） | **v1.17.0** |
+| PX4 韌體（真機 Pix32 v6 / FMUv6C） | **v1.17.0 stable** ✅ 與 SITL 同版 |
+| px4_msgs | `release/1.17` @ `86d8239` |
 | Micro XRCE-DDS Agent | v2.4.2 |
-| Gazebo | **Garden 7.9.0**（不是 Classic 11） |
+| Gazebo | **Harmonic 8.15.0**（Garden 7.9.0 仍留著備援） |
 
-> Gazebo Garden 與 Classic **無法共存**：`gz-tools2` 的套件相依明確
-> `Conflicts: gazebo (>= 11.0.0)`。裝 Garden 會移除 Classic。
+> 2026-08-31 從 v1.14.0 升上 v1.17.0，SITL 與真機終於同版。
+> **這是 v1.17 的硬性需求**：PX4 v1.17 的 `gz_bridge` 只找得到
+> `gz-transport13/14`（Harmonic），Garden 的 transport12 不被接受。
+>
+> Gazebo Garden 與 Harmonic **可以共存**（套件名稱、外掛路徑完全分開，
+> 沒有 `Conflicts`）。`gz` 指令預設挑版號最新的，要指定舊版用 `--force-version 7`。
+> 但 Garden 與 **Classic** 無法共存：`gz-tools2` 明確 `Conflicts: gazebo (>= 11.0.0)`。
 
 ---
 
@@ -62,7 +67,7 @@ cd ~/ros2_ws && colcon build --packages-select drone_control
 ./src/drone_control/scripts/check_env.sh
 ```
 
-**最需要確認的是 `px4_msgs` 的分支**（期望 `release/1.14` @ `ffb6e80`）。
+**最需要確認的是 `px4_msgs` 的分支**（期望 `release/1.17` @ `86d8239`）。
 版本不符時**編譯會過、執行才錯亂**，極難除錯。
 
 `px4_msgs` 不存在的話才直接 import：
@@ -114,7 +119,7 @@ sudo apt update && sudo apt install -y gz-garden
 #### 步驟 3：PX4-Autopilot
 
 ```bash
-git clone -b v1.14.0 --recursive https://github.com/PX4/PX4-Autopilot.git ~/PX4-Autopilot
+git clone -b v1.17.0 --recursive https://github.com/PX4/PX4-Autopilot.git ~/PX4-Autopilot
 cd ~/PX4-Autopilot
 bash ./Tools/setup/ubuntu.sh          # 裝編譯相依
 
@@ -151,7 +156,7 @@ make -j$(nproc) && sudo make install && sudo ldconfig
 ```bash
 sudo apt install -y python3-vcstool
 cd ~/ros2_ws
-vcs import src < src/drone_control/px4_deps.repos    # release/1.14 @ ffb6e80
+vcs import src < src/drone_control/px4_deps.repos    # release/1.17 @ 86d8239
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install
 ```
@@ -191,8 +196,10 @@ colcon build --symlink-install
 | 相對高度起飛 | `takeoff_altitude:=0.5`，看 log 有沒有真的爬升 | ✅ ARM→HOVER 花 2.3 秒，log 顯示 `0.31 → 0.37 → 0.41 m` | 2026-08-27 |
 | 飛手接管偵測 | 懸停中在 `pxh>` 下 `commander mode auto:loiter` | ✅ 立刻 `HOVER -> DONE`，`nav_state=4` | 2026-08-27 |
 | 正常降落不誤判 | 完整流程全程不介入 | ✅ `nav_state=18` 未觸發接管警告 | 2026-08-27 |
-| `topic_suffix` 組出的名稱 | 比對 `ros2 topic list` | ✅ `/MAV1/fmu/out/vehicle_local_position_v1` | 2026-08-27 |
-| 真機單機起飛 | — | ⏳ 未測 | — |
+| `/fmu/out/` 的 `_v1` 後綴 | 比對 `ros2 topic list` | ✅ `/MAV1/fmu/out/vehicle_local_position_v1` | 2026-08-27 |
+| 真機單機起飛 | 飛場完整流程 | ✅ ARM→起飛→懸停→降落→關閉全正常且穩定（未用 OptiTrack） | 2026-08-31 |
+| v1.17 SITL 起飛 | 升版後重跑同一份程式 | ✅ 程式零修改，ARM 第一次就成功 | 2026-08-31 |
+| v1.17 SITL 三機 | `start_3_px4.sh` + `three_drones.launch.py` | ✅ 三台同時 1.76 / 2.26 / 2.75 m 懸停降落，Accel TIMEOUT 0 次 | 2026-08-31 |
 
 ### ⚠️ SITL 不能用 `commander mode posctl` 測接管
 
@@ -248,7 +255,6 @@ ros2 launch drone_control single_drone.launch.py
 |---|---|---|
 | `takeoff_altitude` | `0.8` | 起飛高度（公尺），**相對起飛點** |
 | `position_tolerance` | `0.3` | 高度到達的容忍值，**不要超過起飛高度的 1/3** |
-| `topic_suffix` | `''` | `/fmu/out/` 的版本後綴。**PX4 v1.16+ 要填 `_v1`**，v1.14 留空 |
 | `hover_duration` | `10.0` | 到達後懸停秒數 |
 | `vehicle_name` | `MAV1` | 只影響 log 顯示 |
 | `use_namespace` | `false` | PX4 有帶 `PX4_UXRCE_DDS_NS` 時要設 `true` |
@@ -367,22 +373,30 @@ uxrce_dds_client start -t serial -d /dev/ttyS5 -b 921600 -n MAV1
 
 ### ⚠️ 先確認 topic 名稱
 
-**PX4 v1.16 起引入「訊息版本化」，`/fmu/out/` 的 topic 會帶 `_vN` 後綴。**
+**PX4 v1.16 起引入「訊息版本化」，部分 topic 會帶 `_vN` 後綴。**
 
-```bash
-ros2 topic list | grep fmu
-```
+後綴是**逐訊息**決定的（PX4 原始碼 `msg/versioned/` 底下的才有），
+**不是逐方向**決定的。本專案用到的五個 topic，實測 v1.17.0：
 
-| 你看到的 | 要加的參數 |
+| topic | 後綴 |
 |---|---|
-| `/MAV1/fmu/out/vehicle_local_position_v1` | `use_namespace:=true topic_suffix:=_v1` |
-| `/fmu/out/vehicle_local_position` | 不用加（v1.14 SITL） |
+| `/fmu/out/vehicle_local_position_v1` | ✅ 有 |
+| `/fmu/out/vehicle_status_v1` | ✅ 有 |
+| `/fmu/in/offboard_control_mode` | ❌ 無 |
+| `/fmu/in/trajectory_setpoint` | ❌ 無 |
+| `/fmu/in/vehicle_command` | ❌ 無 |
 
-`/fmu/in/` 的三個 topic（`offboard_control_mode`、`trajectory_setpoint`、`vehicle_command`）
-**兩版名稱相同**，不需要後綴。
+**這五個名稱已經寫死在 `offboard_takeoff_node.cpp` 裡**，不用再帶任何參數。
+（2026-08-31 之前有個 `topic_suffix` 參數，是為了橋接「SITL v1.14 沒後綴 /
+真機 v1.17 有後綴」；SITL 升上 v1.17 後兩邊同版，參數已移除。
+若要接回 v1.14 的飛控，把那兩行的 `_v1` 拿掉即可。）
 
-> 實測 2026-08-27：飛場的 Pix32 v6 跑 **PX4 v1.17.0 stable**（`ver all` → `HW arch: PX4_FMU_V6C`），
-> topic 是 `/MAV1/fmu/out/vehicle_local_position_v1`。
+> ⚠️ **後綴查不到文件，也不在 `dds_topics.yaml` 裡** —— 它是
+> `uxrce_dds_client` 執行時才接上去的。唯一可靠的辦法是把 PX4 跑起來看：
+>
+> ```bash
+> ros2 topic list | grep fmu
+> ```
 >
 > 節點啟動時會把完整 topic 名稱印出來，卡在 `WAIT_FOR_FCU` 時直接拿去跟
 > `ros2 topic list` 比對：
@@ -413,7 +427,6 @@ source ~/ros2_ws/install/setup.bash
 export ROS_DOMAIN_ID=42
 ros2 launch drone_control single_drone.launch.py \
     use_namespace:=true \
-    topic_suffix:=_v1 \
     takeoff_altitude:=0.8 \
     position_tolerance:=0.2
 ```
@@ -584,24 +597,24 @@ PX4_UXRCE_DDS_PORT=9888 make px4_sitl gz_x500        # 終端 2
 ### px4_msgs 版本要先查，不要直接覆蓋
 
 「同學跑過」不代表版本跟你一樣。px4_msgs 若是 `main` 或 `release/1.15`，
-欄位定義跟 PX4 v1.14 對不上時**編譯會過、執行才錯亂**（數值變垃圾），極難除錯。
+欄位定義跟 PX4 v1.17 對不上時**編譯會過、執行才錯亂**（數值變垃圾），極難除錯。
 
 **先查，別急著 import：**
 
 ```bash
-git -C ~/ros2_ws/src/px4_msgs describe --tags    # 期望 v1.14.0
-git -C ~/ros2_ws/src/px4_msgs rev-parse --short HEAD   # 期望 ffb6e80
+git -C ~/ros2_ws/src/px4_msgs branch --show-current    # 期望 release/1.17
+git -C ~/ros2_ws/src/px4_msgs rev-parse --short HEAD   # 期望 86d8239
 ```
 
 | 結果 | 怎麼辦 |
 |---|---|
-| 就是 `v1.14.0` / `ffb6e80` | 什麼都不用做 |
+| 就是 `release/1.17` / `86d8239` | 什麼都不用做 |
 | **不存在** | 可以安全 import：`cd ~/ros2_ws && vcs import src < src/drone_control/px4_deps.repos` |
 | **版本不同** | ⚠️ **先不要動**，見下方 |
 
 > ⚠️ 共用的 workspace 裡，`src/px4_msgs` 是**大家共用的一份**。
 > 直接 `vcs import` 會把它切到別的版本，同學的 package 可能就編不過或行為改變。
-> 遇到版本不同時，先跟使用那台電腦的人確認能不能統一到 `release/1.14`；
+> 遇到版本不同時，先跟使用那台電腦的人確認能不能統一到 `release/1.17`；
 > 不方便更動的話，就在自己家目錄另開一個 workspace，不要動公用的那個：
 >
 > ```bash

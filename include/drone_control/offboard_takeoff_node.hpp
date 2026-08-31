@@ -118,12 +118,6 @@ private:
   std::string vehicle_name_;     ///< 這台飛機的名字，例如 "MAV1"。只影響 log 與識別，不影響 topic
   std::string px4_namespace_;    ///< "" 或 "/MAV1"、"/MAV2"…，必須與 PX4 的 PX4_UXRCE_DDS_NS 一致
 
-  /// 訂閱 topic 的版本後綴，例如 "_v1"。
-  /// PX4 v1.16 起引入「訊息版本化」，/fmu/out/ 的 topic 會帶上 _vN 後綴
-  /// （實測 v1.17.0：/MAV1/fmu/out/vehicle_local_position_v1）。
-  /// v1.14 沒有這個機制，所以預設留空，由 launch 參數依實際飛控版本指定。
-  /// 注意：只有 /fmu/out/ 需要，/fmu/in/ 的三個 topic 兩版名稱相同。
-  std::string topic_suffix_;
   int         target_system_;    ///< MAVLink system id：單機=1，多機= instance+1
   double      takeoff_altitude_; ///< 起飛高度（正值，公尺。程式內部會轉成 NED 的負值）
   double      hover_duration_;   ///< 懸停秒數

@@ -11,11 +11,19 @@
 #   sudo apt install python3-vcstool     # 只需裝一次
 #   vcs import src < px4_deps.repos
 #
-# 注意 px4_msgs 的分支名稱沒有 "v"（是 release/1.14 不是 release/v1.14），
+# 注意 px4_msgs 的分支名稱沒有 "v"（是 release/1.17 不是 release/v1.17），
 # 但 px4_ros_com 有 "v"，這是 PX4 官方自己的不一致，很容易踩到。
+#
+# 如果你是「已經 clone 過舊版、想切到新版」而不是重新 import：
+#   vcs 當初是用 --depth 1 --branch 做淺層 clone，remote 的 refspec
+#   被綁死成只抓那一個分支，直接 git fetch 新分支會拿到 commit 但建不出
+#   追蹤分支（報「不是提交」）。要先放寬 refspec：
+#     git config --unset-all remote.origin.fetch
+#     git config --add remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+#   之後才 fetch / checkout 得動。
 # ---------------------------------------------------------------
 repositories:
   px4_msgs:
     type: git
     url: https://github.com/PX4/px4_msgs.git
-    version: release/1.14
+    version: release/1.17
