@@ -58,7 +58,10 @@ export GZ_IP=127.0.0.1
 source "$BUILD_DIR/rootfs/gz_env.sh"
 
 NAMES=("MAV1" "MAV2" "MAV3")
-POSES=("0,0"  "0,3"  "0,-3")   # NED：第一個是北，第二個是東。橫向間隔 3 公尺
+POSES=("0,0"  "0,3"  "0,-3")   # ENU：第一個是東、第二個是北，間隔 3 公尺（沿南北排開）。
+                               # 為什麼不是 NED：px4-rc.gzsim:116-130 把這串原封不動
+                               # 塞進 SDF 的 <pose>，中間沒有座標轉換，而 SDF 世界是 ENU
+                               #（world 檔裡的 <world_frame_orientation>ENU</...>）
 
 # --- 小工具：輪詢等待某個條件成立 -------------------------------------------
 # 用「等到真的好了」取代「睡固定秒數」。固定 sleep 在機器慢的時候會不夠、

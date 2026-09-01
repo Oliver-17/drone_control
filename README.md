@@ -53,7 +53,7 @@ ROS 2 Humble + PX4 SITL 的 offboard 控制 package，目標是三機編隊。
 
 ```bash
 cd ~/ros2_ws/src
-git clone https://github.com/Oliver-17/fanros2_ws.git drone_control
+git clone https://github.com/Oliver-17/drone_control.git
 cd ~/ros2_ws && colcon build --packages-select drone_control
 ```
 
@@ -90,7 +90,7 @@ cd ~/ros2_ws && vcs import src < src/drone_control/px4_deps.repos
 
 ```bash
 mkdir -p ~/ros2_ws/src && cd ~/ros2_ws/src
-git clone https://github.com/Oliver-17/fanros2_ws.git drone_control
+git clone https://github.com/Oliver-17/drone_control.git
 ./drone_control/scripts/check_env.sh
 ```
 
@@ -619,7 +619,7 @@ git -C ~/ros2_ws/src/px4_msgs rev-parse --short HEAD   # 期望 86d8239
 >
 > ```bash
 > mkdir -p ~/my_ws/src && cd ~/my_ws/src
-> git clone https://github.com/Oliver-17/fanros2_ws.git drone_control
+> git clone https://github.com/Oliver-17/drone_control.git
 > cd ~/my_ws && vcs import src < src/drone_control/px4_deps.repos
 > colcon build
 > ```
