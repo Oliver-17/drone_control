@@ -15,6 +15,25 @@
   <!-- px4_msgs: PX4 的訊息定義，必須和 PX4 韌體版本對齊（這裡是 release/1.14） -->
   <depend>px4_msgs</depend>
 
+  <!-- 以下為 px4_tf_node / cmd_vel_to_px4_node 用（PX4 <-> ROS 的雙向座標翻譯） -->
+  <!-- geometry_msgs: Twist（Nav2 的速度指令）與 TransformStamped -->
+  <depend>geometry_msgs</depend>
+  <!-- tf2 系列: 四元數運算與 TF 廣播。座標轉換一律交給它，不手刻旋轉矩陣 -->
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+
+  <!-- Nav2：S4 起用到 costmap 與 map_server。只在執行期需要，編譯不需要 -->
+  <depend>nav_msgs</depend>
+  <depend>nav2_msgs</depend>
+  <exec_depend>nav2_costmap_2d</exec_depend>
+  <exec_depend>nav2_map_server</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <!-- 靜態地圖與 Nav2 參數來自場地包。
+       方向是「節點包依賴資料包」，反過來不行 ——
+       否則同學只想拿場地卻被迫連飛控程式一起裝。 -->
+  <exec_depend>drone_nav2_apriltag</exec_depend>
+
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 

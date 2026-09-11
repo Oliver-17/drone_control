@@ -1,0 +1,87 @@
+# PX4 <-> ROS 雙向座標翻譯的參數（S1 / S2）
+#
+# 兩支節點共用一份，因為它們的 px4_namespace 一定要一致 ——
+# 分成兩個檔的話很容易只改一邊，而症狀是「TF 有但飛機不動」，要查很久。
+
+/**/px4_tf_node:
+  ros__parameters:
+    px4_namespace: "MAV1"
+
+    # ⚠️ 跟 Nav2 和感測器橋接用同一條時間軸。
+    # ros_gz_bridge 發的感測器訊息用 Gazebo 的模擬時間，TF 也必須用同一個，
+    # 否則 costmap 沒辦法把光達資料轉到 map —— 而且只會安靜地沒有障礙物。
+    # 前提是 /clock 有被橋過來（cameras.launch.py 做了）。
+    use_sim_time: true
+
+    # TF 樹：map -> odom -> base_link
+    # 名字用 ROS 的慣例，Nav2 和 RViz 的預設值就是這三個，改了要記得同步改它們。
+    map_frame: "map"
+    odom_frame: "odom"
+    base_frame: "base_link"
+
+    # map -> odom 由誰發布。
+    #   true  本節點發一個固定的單位變換（模擬裡 PX4 位置幾乎是真值，不會飄）
+    #   false 交給別人發 —— 之後接 slam_toolbox 時要改成 false
+    #
+    # ⚠️ 兩個節點同時發同一段 TF 會讓整棵樹閃爍，症狀是「機器人位置一直跳」，
+    #    非常難查。接 SLAM 前務必先把這個關掉。
+    publish_map_to_odom: true
+
+    # ⚠️ odom 的原點在 map 座標的哪裡（ENU：東、北、上）。
+    #
+    # odom 原點 = PX4 的 EKF 初始化位置 = 飛機開機的地方。
+    # map  原點 = 靜態地圖的原點 = Gazebo 世界原點。
+    # 飛機不是 spawn 在世界原點的話，這裡一定要填，否則 costmap 裡的牆
+    # 會跟光達掃到的牆「整體錯開」—— 而所有 TF 看起來都正常，
+    # 因為它們彼此自洽，只有跟世界比才看得出來。
+    #
+    # drone_nav2_apriltag 的 start_arena_sitl.sh 把第一台擺在節點 0 (-2, 0)。
+    odom_origin_in_map: [-2.0, 0.0, 0.0]
+    odom_origin_yaw: 0.0
+
+    # ⚠️ 開機時自動對齊航向。
+    # PX4 的航向來自 EKF2 融合磁力計，它認為的「北」和 Gazebo 世界的北
+    # 實測差 8 度。不補的話 costmap 會把光達掃到的牆整體轉 8 度疊上去，
+    # 在 16 m 處偏 2.2 m —— 而所有 TF 仍然自洽，完全不報錯。
+    # initial_map_yaw 是「開機時機頭在 map 座標的朝向」（ENU 弧度）。
+    # start_arena_sitl.sh 的 spawn yaw 是 0，所以填 0。
+    # ⚠️ 關掉了。這個做法是錯的方向：
+    # 它用「旋轉整個 map->odom」去修航向，但 PX4 的「位置」本來就對齊世界，
+    # 旋轉會把位置一起轉歪，而且誤差隨離原點的距離放大
+    # （實測飛到 11.8 m 外時 TF 位置偏了 2.17 m，光達的點整體平移，
+    #   costmap 在空地上出現假牆）。
+    # 正確的做法是修 PX4 的航向估計本身（EKF2_MAG_TYPE=5），
+    # 讓位置和航向用同一個基準。
+    align_yaw_on_start: false
+    initial_map_yaw: 0.0
+
+/**/cmd_vel_to_px4_node:
+  ros__parameters:
+    px4_namespace: "MAV1"
+
+    # 刻意「不」用 sim time：這支要跟 PX4 講話，setpoint 的時間戳
+    # 沿用系統時間比較安全（PX4 端用到達時間判斷 offboard 有沒有斷流）。
+    use_sim_time: false
+
+    # 定高飛行的高度（公尺，離地正值）。
+    # Nav2 完全不知道有高度這回事，它只規劃平面 —— 高度由這個節點鎖住。
+    flight_altitude: 3.0
+
+    # 超過這麼久沒收到 cmd_vel 就「完全停止發布」。
+    # 不是發零速度：發零的話 publisher 一直存在，別人用 count_publishers
+    # 檢查「還有沒有人在控制」會誤判成有，直接拒絕接手。
+    # 0.5 秒的依據：Nav2 controller 預設 20 Hz，掉十幀才觸發，不會誤判。
+    cmd_timeout_s: 0.5
+
+    # 定高用的 P 增益與爬升速度上限。
+    # 不用位置 setpoint 鎖高度的原因：實測那樣起飛後會振盪 ±3 m，要三十秒才收斂。
+    # 改用速度控制 + P 回授就穩了（和 precision_land_node 同一套做法）。
+    kp_z: 0.6
+    max_climb_speed: 1.0
+
+    # 安全上限。Nav2 理論上已經限速，這裡是參數填錯時的最後一道防線。
+    max_speed_xy: 1.5
+    max_yawspeed: 1.0
+
+    # PX4 要求 offboard setpoint 串流 > 2 Hz，20 Hz 是十倍餘裕。
+    publish_rate_hz: 20.0
