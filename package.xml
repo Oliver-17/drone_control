@@ -34,6 +34,20 @@
        否則同學只想拿場地卻被迫連飛控程式一起裝。 -->
   <exec_depend>drone_nav2_apriltag</exec_depend>
 
+  <!-- Python 端（arm_and_takeoff.py、mission_node.py、test/*.py）用。
+       之前沒宣告是漏的 —— 能跑是因為 rclpy 本來就裝在系統裡。 -->
+  <exec_depend>rclpy</exec_depend>
+  <!-- action_msgs: mission_node 要讀 GoalStatus 判斷 action 成功與否。
+       Humble 的 NavigateToPose.Result 是 std_msgs/Empty，裡面沒有錯誤碼，
+       成功失敗只能看 goal 的 status，所以這個相依是必要的。 -->
+  <exec_depend>action_msgs</exec_depend>
+
+  <!-- ⚠️ 刻意「不」宣告 drone_apriltag_landing。
+       mission_node 對 PrecisionLand 是延後 import 的，沒裝那個套件時
+       用 land:=false 照樣能跑「導航到某個節點」。宣告成相依的話，
+       只想要橋接節點的人會被迫連降落包一起裝 ——
+       跟上面「節點包依賴資料包、反過來不行」是同一個原則。 -->
+
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 

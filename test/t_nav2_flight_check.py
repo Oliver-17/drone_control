@@ -48,6 +48,53 @@ MIN_FLIGHT_CLEARANCE = 0.35
 MAX_ALT_DRIFT = 0.6
 
 
+def gazebo_truth(env):
+    """從 Gazebo 問「飛機真正在哪」。
+
+    這是唯一能分辨「TF 算錯」和「光達量錯」的方法 ——
+    前面所有的比對都是拿我們自己算的東西互相比，永遠自洽。
+    """
+    model = f"{MODEL}_{INSTANCE}"
+    try:
+        out = subprocess.run(
+            ["gz", "topic", "-e", "-n", "1",
+             "-t", f"/world/{WORLD}/dynamic_pose/info"],
+            capture_output=True, text=True, env=env, timeout=8).stdout
+    except Exception:
+        return None
+    # 文字格式：一連串 pose { name: "..." position { x: .. y: .. } }
+    blocks = out.split("pose {")
+    for b in blocks:
+        if f'name: "{model}"' not in b:
+            continue
+        try:
+            pos = b.split("position {")[1].split("}")[0]
+            vals = {}
+            for line in pos.splitlines():
+                line = line.strip()
+                for k in ("x:", "y:", "z:"):
+                    if line.startswith(k):
+                        vals[k[0]] = float(line.split(":")[1])
+            yaw_t = None
+            if "orientation {" in b:
+                o = b.split("orientation {")[1].split("}")[0]
+                q = {}
+                for line in o.splitlines():
+                    line = line.strip()
+                    for k in ("x:", "y:", "z:", "w:"):
+                        if line.startswith(k):
+                            q[k[0]] = float(line.split(":")[1])
+                if len(q) == 4:
+                    yaw_t = math.atan2(
+                        2 * (q["w"] * q["z"] + q["x"] * q["y"]),
+                        1 - 2 * (q["y"] ** 2 + q["z"] ** 2))
+            if "x" in vals and "y" in vals:
+                return vals["x"], vals["y"], vals.get("z", 0.0), yaw_t
+        except (IndexError, ValueError):
+            continue
+    return None
+
+
 class Flyer:
     def __init__(self, node, ns):
         from rclpy.action import ActionClient
@@ -110,50 +157,9 @@ class Flyer:
                            math.degrees(math.hypot(roll, pitch))))
 
     def gazebo_truth(self, env):
-        """從 Gazebo 問「飛機真正在哪」。
-
-        這是唯一能分辨「TF 算錯」和「光達量錯」的方法 ——
-        前面所有的比對都是拿我們自己算的東西互相比，永遠自洽。
-        """
-        model = f"{MODEL}_{INSTANCE}"
-        try:
-            out = subprocess.run(
-                ["gz", "topic", "-e", "-n", "1",
-                 "-t", f"/world/{WORLD}/dynamic_pose/info"],
-                capture_output=True, text=True, env=env, timeout=8).stdout
-        except Exception:
-            return None
-        # 文字格式：一連串 pose { name: "..." position { x: .. y: .. } }
-        blocks = out.split("pose {")
-        for b in blocks:
-            if f'name: "{model}"' not in b:
-                continue
-            try:
-                pos = b.split("position {")[1].split("}")[0]
-                vals = {}
-                for line in pos.splitlines():
-                    line = line.strip()
-                    for k in ("x:", "y:", "z:"):
-                        if line.startswith(k):
-                            vals[k[0]] = float(line.split(":")[1])
-                yaw_t = None
-                if "orientation {" in b:
-                    o = b.split("orientation {")[1].split("}")[0]
-                    q = {}
-                    for line in o.splitlines():
-                        line = line.strip()
-                        for k in ("x:", "y:", "z:", "w:"):
-                            if line.startswith(k):
-                                q[k[0]] = float(line.split(":")[1])
-                    if len(q) == 4:
-                        yaw_t = math.atan2(
-                            2 * (q["w"] * q["z"] + q["x"] * q["y"]),
-                            1 - 2 * (q["y"] ** 2 + q["z"] ** 2))
-                if "x" in vals and "y" in vals:
-                    return vals["x"], vals["y"], vals.get("z", 0.0), yaw_t
-            except (IndexError, ValueError):
-                continue
-        return None
+        # 實作抽到模組層了，S7 的 t_mission_check.py 要用同一份 ——
+        # 複製一份的話，哪天 Gazebo 的輸出格式變了只會改到其中一邊。
+        return gazebo_truth(env)
 
     def sample_ghosts(self, walls):
         """取樣一次：這一幀的光達回波有多少「不落在真牆上」，它們的高度多少。

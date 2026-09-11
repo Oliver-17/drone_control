@@ -79,7 +79,9 @@ install(PROGRAMS
   test/t_costmap_check.py
   test/t_planner_check.py
   test/t_nav2_flight_check.py
+  test/t_mission_check.py
   scripts/arm_and_takeoff.py
+  scripts/mission_node.py
   scripts/start_3_px4.sh
   scripts/check_env.sh
   scripts/record_flight.sh

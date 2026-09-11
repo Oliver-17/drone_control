@@ -32,15 +32,41 @@ ROS 2 Humble + PX4 SITL 的 offboard 控制 package，目標是三機編隊。
 
 ## 內容
 
+**航點飛行**（自己寫死流程）
+
 | 檔案 | 說明 |
 |---|---|
 | `src/offboard_takeoff_node.cpp` | 主體：起飛 → 懸停 → 降落的狀態機 |
 | `include/drone_control/offboard_takeoff_node.hpp` | 類別定義，供之後的編隊節點複用 |
 | `launch/single_drone.launch.py` | 單機 |
 | `launch/three_drones.launch.py` | 三機（MAV1 / MAV2 / MAV3） |
+
+**Nav2 導航**（路線由 Nav2 規劃，見 [執行：Nav2 導航](#執行nav2-導航避障)）
+
+| 檔案 | 說明 |
+|---|---|
+| `src/px4_tf_node.cpp` | NED→ENU，發 `map → odom → base_link` 與 `/odom` |
+| `src/cmd_vel_to_px4_node.cpp` | `cmd_vel`（Twist）→ PX4 `TrajectorySetpoint`，含定高 |
+| `src/goal_to_planner_node.cpp` | `/goal_pose` → 問 planner → 畫 `/plan`（只規劃模式用） |
+| `launch/px4_bridge.launch.py` | 上面兩個橋接節點 |
+| `launch/nav2.launch.py` | Nav2 全套（`level:=planner` / `full`） |
+| `config/px4_bridge.yaml` | 兩個橋接節點的參數 |
+| `scripts/arm_and_takeoff.py` | 解鎖 → 起飛到定高 → 退出，把控制權交給 Nav2 |
+| `scripts/mission_node.py` | **整趟任務的編排者**（規劃 → 起飛 → 導航 → 降落） |
+| `launch/mission.launch.py` | route_server + mission_node |
+
+**工具與測試**
+
+| 檔案 | 說明 |
+|---|---|
 | `scripts/start_3_px4.sh` | 一次啟動三台 PX4 SITL |
 | `scripts/check_env.sh` | 環境健檢，唯讀。真機用 `--flight` |
 | `scripts/record_flight.sh` | 用 `ros2 bag` 錄飛行資料，事後比對指令與實際 |
+| `test/t_bridge_check.py` | TF 鏈 + `cmd_vel` 推得動飛機 |
+| `test/t_costmap_check.py` | 光達進得了 costmap |
+| `test/t_planner_check.py` | 規劃得出路線且離牆夠遠 |
+| `test/t_nav2_flight_check.py` | 完整實飛，並對 Gazebo 真值 |
+| `test/t_mission_check.py` | **整趟任務**實飛，落點對 Gazebo 真值 |
 | `px4_deps.repos` | 記錄 px4_msgs 版本，供 `vcs import` 還原 |
 
 ---
@@ -182,6 +208,8 @@ colcon build --symlink-install
 | 模擬 · 三機 | 3 | 你的電腦 ×3 | UDP 8888（共用） | ✅ 已驗證 |
 | 實機 · 單機 | 2 | Pix32 v6 | 序列埠 | ⏳ 待測 |
 | 實機 · 三機 | 2 | Pix32 v6 ×3 | 序列埠 ×3 | ⛔ 尚未開始 |
+| 模擬 · Nav2 導航 | 6 | 你的電腦 | UDP 8888 | ✅ 已驗證 |
+| 模擬 · 整趟任務 | 6 | 你的電腦 | UDP 8888 | ✅ 已驗證 |
 
 > **不論哪個情境，控制節點的程式碼完全相同。** 差別只在「PX4 從哪裡來」。
 
@@ -283,6 +311,172 @@ pkill -x px4 ; pkill -f "gz sim"
 ```
 
 > 第二行**必須用 `-f`**：`gz` 是 Ruby 包裝腳本，行程名是 `ruby`，`-x` 永遠抓不到。
+
+---
+
+## 執行：Nav2 導航（避障）
+
+跟上面的 `single_drone.launch.py` 是**兩條不同的路**：那支是自己寫死航點的狀態機，
+這裡是 **Nav2 規劃路線 → `cmd_vel` → PX4**，會繞開光達看到的障礙物。
+場地與靜態地圖來自 [`drone_nav2_apriltag`](https://github.com/Oliver-17/drone_nav2_apriltag)。
+
+需要 **6 個終端**，依序開：
+
+```bash
+# 終端 1 — Gazebo + PX4 SITL（跑 nav2_arena 世界）
+DRONES=1 ~/ros2_ws/src/drone_nav2_apriltag/scripts/start_arena_sitl.sh
+
+# 終端 2 — Agent
+MicroXRCEAgent udp4 -p 8888
+
+# 終端 3 — TF + cmd_vel 橋
+#   odom_origin = 飛機 spawn 在 map 的哪裡，要跟 start_arena_sitl.sh 的 POSES 一致
+ros2 launch drone_control px4_bridge.launch.py \
+    namespace:=MAV1 odom_origin:=-2,0,0 flight_altitude:=3.0
+
+# 終端 4 — 感測器橋（光達一定要，costmap 全靠它）
+ros2 launch drone_nav2_apriltag cameras.launch.py \
+    namespace:=MAV1 view:=false lidar:=true
+
+# 終端 5 — Nav2
+ros2 launch drone_control nav2.launch.py \
+    namespace:=MAV1 level:=full rviz:=true
+
+# 終端 6 — 解鎖起飛到定高後「自己退出」，把控制權交給 Nav2
+ros2 run drone_control arm_and_takeoff.py --ns MAV1 --altitude 3.0
+```
+
+起飛完成後在 RViz 點 **2D Goal Pose** → 飛機自己規劃並飛過去。
+
+### 這三支節點各自在做什麼
+
+| 節點 | 輸入 | 輸出 | 負責 |
+|---|---|---|---|
+| `px4_tf_node` | `/fmu/out/vehicle_local_position`、`vehicle_attitude` | `/tf`（`map→odom→base_link`）、`/odom` | NED→ENU、告訴 Nav2「飛機在哪、面向哪」 |
+| `cmd_vel_to_px4_node` | `/MAV1/cmd_vel` | `trajectory_setpoint` | FLU→NED、定高 P 控制、維持絕對 yaw 設定點 |
+| `goal_to_planner_node` | `/goal_pose` | `/plan` | **只有 `level:=planner` 用**，單純畫規劃結果 |
+
+### `level` 的差別
+
+| 值 | 會起哪些 server | 用來做什麼 |
+|---|---|---|
+| `planner`（預設） | `map_server` + `planner_server` + `goal_to_planner_node` | 只看規劃出的藍線，飛機不會動 |
+| `full` | 再加 `controller_server` + `bt_navigator` + `behavior_server` | 真的送 `cmd_vel`，飛機會飛 |
+
+### 可選參數
+
+```bash
+ros2 launch drone_control nav2.launch.py namespace:=MAV2            # 換飛機
+ros2 launch drone_control nav2.launch.py params_file:=/path/to.yaml # 換參數檔
+ros2 launch drone_control nav2.launch.py map:=/path/to/map.yaml     # 換靜態地圖
+ros2 launch drone_control nav2.launch.py goal_tool:=false           # 不要接 RViz 的 2D Goal Pose
+```
+
+> 留空的 `params_file` / `map` 會自動去找 `drone_nav2_apriltag` 裝好的
+> `config/nav2_params.yaml` 與 `maps/nav2_arena.yaml`，平常不用填。
+
+### 自動化驗證
+
+會自己開關 Gazebo，**跑之前確認沒有別的 SITL 在跑**。
+
+| 指令 | 在驗什麼 | 時間 |
+|---|---|---|
+| `python3 src/drone_control/test/t_bridge_check.py` | TF 鏈正確、`cmd_vel` 真的推得動飛機 | ~2 分 |
+| `python3 src/drone_control/test/t_costmap_check.py` | 光達進得了 costmap、牆被標成障礙物 | ~2 分 |
+| `python3 src/drone_control/test/t_planner_check.py` | 規劃得出路線、離牆距離足夠 | ~2 分 |
+| `python3 src/drone_control/test/t_nav2_flight_check.py` | **完整實飛**，並和 Gazebo 真值對位置與航向 | ~4 分 |
+
+全部支援 `--gui` 開視窗看過程（預設無視窗比較快）。
+路徑是相對 `~/ros2_ws`，所以要在 workspace 根目錄下跑。
+
+> ⚠️ **只有對 Gazebo 真值的比較才抓得到 TF 錯誤。**
+> `t_bridge_check` 和 `t_costmap_check` 都曾經「全過」卻藏著 2 公尺的位置偏差 ——
+> 因為它們比的是「自己算出來的東西」，自洽但不代表正確。
+
+---
+
+## 執行：整趟任務（mission_node）
+
+上面那節是「你在 RViz 手點目標」。這節是**一個節點把整趟任務跑完**：
+問路線 → 起飛 → 逐個節點導航 → 精準降落。
+
+```
+ROUTE      問 route_server「該走哪些節點」
+   ↓
+TAKEOFF    解鎖 + 起飛到定高（借用 arm_and_takeoff.py 的類別）
+   ↓
+NAVIGATE   逐個節點送 NavigateToPose —— 避障由 Nav2 負責
+   ↓
+LAND       最後一個節點到了 → PrecisionLand 精準降落
+```
+
+前置條件跟上一節一樣（終端 1–5），然後：
+
+```bash
+# 終端 6 — 精準降落節點（不降落的話可以不開）
+ros2 launch drone_apriltag_landing precision_land.launch.py \
+    namespace:=MAV1 camera:=camera_down
+
+# 終端 7 — 任務
+ros2 launch drone_control mission.launch.py
+```
+
+⚠️ **不要再跑 `arm_and_takeoff.py`** —— mission_node 自己會起飛。兩個一起跑會有
+兩個發布者搶 `cmd_vel`，速度變一半而且會抖。
+
+### 可選參數
+
+```bash
+ros2 launch drone_control mission.launch.py goal_node:=7        # 飛到別的節點
+ros2 launch drone_control mission.launch.py land:=false         # 到終點就停，不降落
+ros2 launch drone_control mission.launch.py flight_altitude:=4.0
+ros2 launch drone_control mission.launch.py nav_timeout:=180.0   # 單段導航上限
+```
+
+### 它解決了什麼（S6 之後還缺的三件事）
+
+| 問題 | 之前 | 現在 |
+|---|---|---|
+| 「飛到了」怎麼判斷 | `nav2_then_land.launch.py` 用 `OnProcessExit` —— 那是「子程序結束了」，**不是**「到目標了」。fly_nodes 因錯誤退出時降落照樣被觸發 | 等 `NavigateToPose` 的 result |
+| Nav2 有沒有在用 | 只有在 RViz 手點時才動。`fly_nodes.py` 是自己發 `TrajectorySetpoint` 走直線，不避障 | 中段飛行全部走 Nav2 |
+| 降落結果 | `PrecisionLand` 的 `result_code` 沒人讀 | 讀出來並換成名字印（`NO_TAG` / `BAD_POSE` / `REJECTED`…） |
+
+### 三個實作上的坑
+
+**1. 先問路線、後起飛。** 拓樸圖壞掉（節點 id 打錯、geojson 路徑不對）是最常見的
+失敗，而那種失敗不需要飛機在空中就能發現。先問路線的話，圖有問題時飛機根本不會解鎖。
+
+**2. `NAVIGATE → LAND` 中間一定要等。** `precision_land_node.cpp:380` 檢查的是
+`/{ns}/fmu/in/trajectory_setpoint` 上的**發布者數量**，大於 1 就拒絕接手
+（兩組 setpoint 交錯會讓飛機抽搐）。而 `cmd_vel_to_px4_node` 要等
+`cmd_timeout_s`（預設 0.5 秒）沒收到 `cmd_vel` 才 `setpoint_pub_.reset()`
+銷毀發布者（同檔 `:140`）。導航剛結束時發布者還在，直接送會拿到 `CODE_REJECTED`。
+mission_node 等 2 秒。
+
+**3. Humble 的 `NavigateToPose.Result` 是 `std_msgs/Empty`。** 裡面一個錯誤碼都沒有
+—— 成功與否**只能看 goal 的 status**（`action_msgs/GoalStatus`）。想從 result
+讀錯誤原因的話會發現根本沒有那個欄位。
+
+### 為什麼 `route_server` 是 include 來的
+
+`route_server` 的 `edge_cost_functions` **必須明寫**（預設不含 `PenaltyScorer`，
+地圖裡的 `penalty` 會完全失效而且沒有警告）。那組設定只該有一份，所以
+`mission.launch.py` 是 include `drone_nav2_apriltag` 的 `fly_nodes.launch.py`
+並帶 `route_only:=true` —— 那個參數會關掉 fly_nodes 本體，只留 route_server。
+
+### 驗證
+
+```bash
+python3 src/drone_control/test/t_mission_check.py           # 約 6 分鐘
+python3 src/drone_control/test/t_mission_check.py --gui     # 看飛
+python3 src/drone_control/test/t_mission_check.py --no-land # 只測導航
+```
+
+六項檢查：前置資料 / route_server 單獨回答（不用 Gazebo）/ 完整堆疊起得來 /
+四個階段都走過 / **落點對 Gazebo 真值** / 真的落地了。
+
+⚠️ 這支**要用 `--gui`** 比較保險。`HEADLESS=1` 時算繪引擎起不來，下視相機不會有
+影像 —— 而 AprilTag 降落完全靠那顆相機。
 
 ---
 

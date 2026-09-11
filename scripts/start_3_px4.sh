@@ -31,11 +31,25 @@ fi
 # 三機同場時內顯畫不動 → 物理步進被拖慢 → SITL 是 lockstep，PX4 收不到 IMU
 # → `Accel #0 fail: TIMEOUT` → EKF 收斂不了 → 預檢一路失敗。
 # 環境變數會被子程序繼承，所以在這裡 export 一次，PX4 起的 gz sim 就吃得到。
-if command -v nvidia-smi >/dev/null 2>&1; then
+#
+# ⚠️ 這裡要問的是「獨顯現在能不能用」，不是「nvidia-smi 這個檔案在不在」。
+# 2026-09-11 踩到：apt 把驅動從 595.84 升到 595.91 但沒重開機，記憶體裡的
+# 核心模組還是舊版 → nvidia-smi 檔案還在、但離開碼 18（NVML 版本不符）。
+# 舊的 `command -v` 守門條件照樣成立，於是強制走一條壞掉的路 →
+# Qt 建不出 OpenGL context → GUI 秒退 → Gazebo 看起來「自己關掉」，
+# 而錯誤只寫進 ~/.gz/auto_default.log，終端上一個字都看不到，極難查。
+if nvidia-smi -L >/dev/null 2>&1; then
     export __NV_PRIME_RENDER_OFFLOAD=1
     export __GLX_VENDOR_LIBRARY_NAME=nvidia
     export __VK_LAYER_NV_optimus=NVIDIA_only   # Gazebo 若走 Vulkan 後端才會用到
     echo "已啟用 NVIDIA offload（用 nvidia-smi 可確認 gz sim 有出現在程序列表）"
+elif command -v nvidia-smi >/dev/null 2>&1; then
+    # nvidia-smi 在，但跑不動 —— 獨顯現在不能用，硬推會讓 Gazebo 默默死掉，
+    # 所以退回內顯並把原因印在終端上（詳見上面那段註解）。
+    echo "⚠️  nvidia-smi 跑不起來，獨顯現在無法使用 —— 改走內顯。原因："
+    nvidia-smi -L 2>&1 | sed 's/^/     /'
+    echo "     最常見的是「驅動升級後還沒重開機」（核心模組還是舊版），重開機就會好。"
+    echo "     內顯畫多機會拖慢物理步進 → 可能 Accel TIMEOUT → 預檢失敗，先用 DRONES=1 比較保險。"
 else
     echo "找不到 nvidia-smi，維持預設顯示卡"
 fi

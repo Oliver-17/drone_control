@@ -84,6 +84,34 @@ class Procs:
         self.items.append((name, p, f))
         return p
 
+    def stop_one(self, name):
+        """只收掉其中一個。S7 的 C2 先單獨開 route_server 驗證，
+        之後要讓 mission.launch.py 自己開一份，不先收會撞名。"""
+        for i, (n, pr, f) in enumerate(self.items):
+            if n != name:
+                continue
+            if pr.poll() is None:
+                try:
+                    os.killpg(os.getpgid(pr.pid), signal.SIGTERM)
+                except Exception:
+                    pass
+                end = time.time() + 5
+                while time.time() < end and pr.poll() is None:
+                    time.sleep(0.2)
+                if pr.poll() is None:
+                    try:
+                        os.killpg(os.getpgid(pr.pid), signal.SIGKILL)
+                    except Exception:
+                        pass
+            if hasattr(f, "close"):
+                try:
+                    f.close()
+                except Exception:
+                    pass
+            self.items.pop(i)
+            return True
+        return False
+
     def stop_all(self):
         for _, p, _ in reversed(self.items):
             if p.poll() is None:
