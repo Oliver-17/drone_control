@@ -146,16 +146,35 @@ def render(node, args):
     alt = -p.z
     hdg = math.degrees(p.heading)
 
-    # 動捕有沒有真的進 EKF2：eph 是水平位置誤差的標準差。
-    # 動捕在融合時會是公分級；掉到零點幾公尺以上代表 EKF 在靠慣性推算。
-    if p.eph < 0.10:
+    # ⚠️ 判斷「動捕有沒有進 EKF2」要以 xy_valid 為準，不能只看 eph。
+    #    2026-09-16 實測踩到：xy_valid=false 但 eph 顯示 0.012（公分級），
+    #    位置卻漂到 (-165, +307) —— 那個 eph 是估計失效前留下的殘值，
+    #    完全沒有意義。只看 eph 會得到「動捕正常」的錯誤結論。
+    ok = p.xy_valid and p.z_valid
+    if not ok:
+        eph_note = "⚠️  位置無效時 eph 沒有意義，看下面那行"
+    elif p.eph < 0.10:
         eph_note = "✅ 公分級，動捕有在融合"
     elif p.eph < 0.50:
         eph_note = "⚠️  偏大，確認動捕沒有斷斷續續"
     else:
         eph_note = "❌ 太大，EKF 可能在靠慣性推算（動捕沒進去？）"
 
-    valid = "✅" if (p.xy_valid and p.z_valid) else "❌ xy_valid/z_valid 是 false"
+    # ⚠️ 位置和速度是兩個獨立的旗標。2026-09-16 實測遇到
+    #    「xy_valid=false 但相對位移很準」——那代表 EKF2 在融合動捕的
+    #    「速度」而沒融合「位置」：相對移動對，絕對位置從開機漂到哪算哪。
+    #    只看 xy_valid 會誤判成「完全沒在融合」，所以兩個都要顯示。
+    vok = getattr(p, "v_xy_valid", False)
+    valid = (f"位置 {'✅' if ok else '❌'}   速度 {'✅' if vok else '❌'}")
+    if not ok and vok:
+        valid += ("\n            ⚠️ 速度有效但位置無效 = 只融合了速度，沒融合位置。\n"
+                  "               相對位移可信（座標軸判定仍有效），\n"
+                  "               但絕對位置不可用 —— Nav2 這樣不能飛。\n"
+                  "               查 EKF2_EV_CTRL 的 bit0（水平位置）有沒有開。")
+    elif not ok:
+        valid += ("\n            ❌ 位置與速度都無效 —— EKF2 沒在用動捕。\n"
+                  "               查 estimator_status_flags 的 cs_ev_pos，\n"
+                  "               以及 QGC 的 EKF2_EV_CTRL（預設 0 = 全關）")
 
     out.append("")
     hint = "  ← 可以了，記基準點" if abs(hdg) <= HEADING_OK else "  ← 請轉到接近 0"
@@ -163,7 +182,7 @@ def render(node, args):
     out.append(f"  x(北) {p.x:+7.2f}   y(東) {p.y:+7.2f}   "
                f"z(下) {p.z:+7.2f}   離地 {alt:+.2f} m")
     out.append(f"  eph {p.eph:.3f} m   {eph_note}")
-    out.append(f"  位置有效 {valid}")
+    out.append(f"  有效性   {valid}")
     out.append("")
 
     if node.ref is None:
