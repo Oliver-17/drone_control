@@ -34,7 +34,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from t_costmap_check import (            # noqa: E402
-    Report, Procs, build_env, set_sitl_params, locate_arena,
+    Report, Procs, build_env, set_sitl_params, locate_arena, pkill_exact,
     NAMESPACE, INSTANCE, MODEL, WORLD, SPAWN, SPAWN_X, SPAWN_Y,
 )
 from t_nav2_flight_check import gazebo_truth   # noqa: E402
@@ -122,12 +122,11 @@ def main():
 
         # ------------------------------------------------------------------
         rep.section("C2 route_server 單獨回答（不用 Gazebo）")
-        for c in ("px4", "ruby", "route_server", "planner_server",
-                  "controller_server", "bt_navigator", "behavior_server",
-                  "map_server", "lifecycle_manager", "px4_tf_node",
-                  "cmd_vel_to_px4", "apriltag_node", "precision_land_node",
-                  "mission_node"):
-            subprocess.run(["pkill", "-x", c], capture_output=True)
+        pkill_exact("px4", "ruby", "route_server", "planner_server",
+                    "controller_server", "bt_navigator", "behavior_server",
+                    "map_server", "lifecycle_manager", "px4_tf_node",
+                    "cmd_vel_to_px4", "apriltag_node", "precision_land_node",
+                    "mission_node")
         time.sleep(2)
 
         procs.start("route", ["ros2", "launch", "drone_nav2_apriltag",

@@ -51,6 +51,24 @@ OCC_LETHAL = 100
 OCC_INSCRIBED = 99
 
 
+def pkill_exact(*names):
+    """用 comm（程序名）精準收程序，名字自動截到 15 字元。
+
+    ⚠️ Linux 的 comm 上限是 15 個字元（kernel 的 TASK_COMM_LEN）。
+       超過的名字會被截斷，所以 `pkill -x lifecycle_manager`（17 字元）、
+       `pkill -x precision_land_node`（19 字元）**永遠 match 不到任何東西**。
+       而 pkill 找不到目標時回傳 1、不印任何訊息 —— 靜默失效。
+       2026-09-11 就是這樣真的留了一隻 precision_land_node 在背景跑。
+       實測佐證：系統上所有長名字的 comm 都剛好是 15 字元
+       （at-spi2-registr、chrome_crashpad…）。
+
+    為什麼不用 `pkill -f`：那是比對完整指令列，會 match 到「正在下這道
+    指令的 shell 自己」，把自己殺掉（或讓等待迴圈永遠成立）。
+    """
+    for n in names:
+        subprocess.run(["pkill", "-x", n[:15]], capture_output=True)
+
+
 class Report:
     def __init__(self):
         self.failed = 0
@@ -133,11 +151,10 @@ class Procs:
                     f.close()
                 except Exception:
                     pass
-        for comm in ("px4", "ruby", "nav2_costmap_2d", "map_server",
-                     "lifecycle_manager", "px4_tf_node", "cmd_vel_to_px4",
-                     "static_transform_publisher", "parameter_bridge",
-                     "image_bridge"):
-            subprocess.run(["pkill", "-x", comm], capture_output=True)
+        pkill_exact("px4", "ruby", "nav2_costmap_2d", "map_server",
+                    "lifecycle_manager", "px4_tf_node", "cmd_vel_to_px4",
+                    "static_transform_publisher", "parameter_bridge",
+                    "image_bridge")
         time.sleep(1)
         left = []
         for comm in ("px4", "ruby", "nav2_costmap_2d", "map_server"):
@@ -463,9 +480,8 @@ def main():
             rep.fail("找不到 px4 執行檔")
             return 1
 
-        for c in ("px4", "ruby", "nav2_costmap_2d", "map_server",
-                  "lifecycle_manager", "px4_tf_node"):
-            subprocess.run(["pkill", "-x", c], capture_output=True)
+        pkill_exact("px4", "ruby", "nav2_costmap_2d", "map_server",
+                    "lifecycle_manager", "px4_tf_node")
         time.sleep(2)
         env = build_env(args.px4_dir, arena, headless=not args.gui)
 

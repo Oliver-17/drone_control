@@ -36,6 +36,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from t_costmap_check import (            # noqa: E402
     Report, Procs, build_env, set_sitl_params, locate_arena, parse_walls,
+    pkill_exact,
     NAMESPACE, INSTANCE, MODEL, WORLD, SPAWN, SPAWN_X, SPAWN_Y,
 )
 from t_planner_check import wall_clearance   # noqa: E402
@@ -335,10 +336,9 @@ def main():
         rep.ok(f"{len(walls)} 面牆 / {len(nodes)} 個拓樸節點")
 
         build = os.path.join(args.px4_dir, "build", "px4_sitl_default")
-        for c in ("px4", "ruby", "planner_server", "controller_server",
-                  "bt_navigator", "behavior_server", "map_server",
-                  "lifecycle_manager", "px4_tf_node", "cmd_vel_to_px4"):
-            subprocess.run(["pkill", "-x", c], capture_output=True)
+        pkill_exact("px4", "ruby", "planner_server", "controller_server",
+                    "bt_navigator", "behavior_server", "map_server",
+                    "lifecycle_manager", "px4_tf_node", "cmd_vel_to_px4")
         time.sleep(2)
         env = build_env(args.px4_dir, arena, headless=not args.gui)
 

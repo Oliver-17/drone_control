@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # 共用 S4 那支的環境啟動與場景解析，不要複製一份 ——
 # 複製的話兩邊會各自演化，之後改了場地只改到一邊。
 from t_costmap_check import (            # noqa: E402
-    Report, Procs, build_env, locate_arena, parse_walls, point_in_wall,
+    Report, Procs, build_env, locate_arena, parse_walls, point_in_wall, pkill_exact,
     NAMESPACE, INSTANCE, MODEL, WORLD, SPAWN, SPAWN_X, SPAWN_Y,
 )
 
@@ -199,9 +199,8 @@ def main():
         rep.ok(f"拓樸圖有 {len(nodes)} 個節點")
 
         build = os.path.join(args.px4_dir, "build", "px4_sitl_default")
-        for c in ("px4", "ruby", "planner_server", "map_server",
-                  "lifecycle_manager", "px4_tf_node"):
-            subprocess.run(["pkill", "-x", c], capture_output=True)
+        pkill_exact("px4", "ruby", "planner_server", "map_server",
+                    "lifecycle_manager", "px4_tf_node")
         time.sleep(2)
         env = build_env(args.px4_dir, arena, headless=not args.gui)
 

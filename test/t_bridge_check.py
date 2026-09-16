@@ -310,6 +310,9 @@ def main():
             rep.fail(f"找不到 {px4_bin}")
             return 1
 
+        # 這幾個名字都 <= 15 字元所以安全。超過 15 的要先截斷 ——
+        # comm 的上限是 15，pkill -x 用全名會靜默失效（見 t_costmap_check
+        # 的 pkill_exact 註解）。
         for c in ("px4", "ruby", "px4_tf_node", "cmd_vel_to_px4"):
             subprocess.run(["pkill", "-x", c], capture_output=True)
         time.sleep(2)
