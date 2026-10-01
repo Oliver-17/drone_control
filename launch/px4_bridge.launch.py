@@ -13,6 +13,9 @@ Nav2 根本不需要知道底下是 PX4。
     ros2 launch drone_control px4_bridge.launch.py namespace:=MAV2
     ros2 launch drone_control px4_bridge.launch.py flight_altitude:=4.0
 
+    # 換一份參數檔（例如實機設定，放在 drone_bringup）
+    ros2 launch drone_control px4_bridge.launch.py params_file:=/path/to/px4_bridge.yaml
+
 手動測試:
     ros2 topic pub /MAV1/cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.5}}" -r 10
     （飛機應該往機頭方向前進，高度不變）
@@ -31,7 +34,12 @@ PKG = "drone_control"
 def _setup(context, *args, **kwargs):
     ns = LaunchConfiguration("namespace").perform(context)
     alt = LaunchConfiguration("flight_altitude").perform(context)
-    cfg = os.path.join(get_package_share_directory(PKG), "config", "px4_bridge.yaml")
+    # 參數檔可以從外面換。模擬和實機差的全是設定（use_sim_time、高度、原點），
+    # 把那些差異放在 drone_bringup 的參數檔裡，這支 launch 就不用為了實機再改。
+    # 留空 = 用本套件自己的 config/px4_bridge.yaml（模擬用，行為和以前完全一樣）。
+    cfg = LaunchConfiguration("params_file").perform(context)
+    if not cfg:
+        cfg = os.path.join(get_package_share_directory(PKG), "config", "px4_bridge.yaml")
 
     # 兩支都放在同一個 namespace 底下：
     # cmd_vel_to_px4_node 訂的是相對名稱 "cmd_vel"，放進 namespace 之後
@@ -68,5 +76,8 @@ def generate_launch_description():
         DeclareLaunchArgument("odom_origin", default_value="",
                               description="飛機開機位置在 map 的哪裡，格式 x,y,z（ENU）。"
                                           "留空就用參數檔的值"),
+        DeclareLaunchArgument("params_file", default_value="",
+                              description="參數檔路徑。留空就用 drone_control 的 "
+                                          "config/px4_bridge.yaml（模擬用）"),
         OpaqueFunction(function=_setup),
     ])

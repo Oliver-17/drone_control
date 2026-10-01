@@ -43,6 +43,12 @@ def _setup(context, *args, **kwargs):
 
     show_rviz = LaunchConfiguration("rviz").perform(context).lower() \
         in ("true", "1", "yes")
+    # ⚠️ 只管這支 launch「自己寫死」的兩個節點（RViz、goal_to_planner_node）。
+    #    Nav2 伺服器的 use_sim_time 寫在 params_file 裡 —— 那份檔案本來就可以換。
+    #    模擬要 true（時間戳來自 Gazebo 的 /clock）；實機沒有 /clock，
+    #    設 true 的節點時鐘會永遠停在 0，而且不會報錯。
+    sim_time = LaunchConfiguration("use_sim_time").perform(context).lower() \
+        in ("true", "1", "yes")
     level = LaunchConfiguration("level").perform(context).lower()
     full = (level == "full")
     arena_share = get_package_share_directory(ARENA)
@@ -69,7 +75,7 @@ def _setup(context, *args, **kwargs):
             package="rviz2", executable="rviz2", name="rviz2_costmap",
             arguments=["-d", os.path.join(arena_share, "rviz",
                                           "nav2_costmap.rviz")],
-            parameters=[{"use_sim_time": True}],
+            parameters=[{"use_sim_time": sim_time}],
             output="log",
         ))
 
@@ -84,7 +90,7 @@ def _setup(context, *args, **kwargs):
         extra.append(Node(
             package="drone_control", executable="goal_to_planner_node",
             name="goal_to_planner_node",
-            parameters=[{"use_sim_time": True}],
+            parameters=[{"use_sim_time": sim_time}],
             output="screen", emulate_tty=True,
         ))
 
@@ -162,6 +168,9 @@ def generate_launch_description():
         DeclareLaunchArgument("goal_tool", default_value="true",
                               description="把 RViz 的 2D Goal Pose 接到 planner。"
                                           "S6 之後 bt_navigator 會接管，要設 false"),
+        DeclareLaunchArgument("use_sim_time", default_value="true",
+                              description="RViz 與 goal_to_planner_node 用的時鐘。"
+                                          "模擬 true；實機 false（沒有 /clock）"),
         DeclareLaunchArgument("rviz", default_value="false",
                               description="true 會順便開 RViz，設定檔已經配好"),
         OpaqueFunction(function=_setup),
