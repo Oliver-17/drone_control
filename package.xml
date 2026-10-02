@@ -18,6 +18,7 @@
   <!-- 以下為 px4_tf_node / cmd_vel_to_px4_node 用（PX4 <-> ROS 的雙向座標翻譯） -->
   <!-- geometry_msgs: Twist（Nav2 的速度指令）與 TransformStamped -->
   <depend>geometry_msgs</depend>
+  <depend>std_srvs</depend>
   <!-- tf2 系列: 四元數運算與 TF 廣播。座標轉換一律交給它，不手刻旋轉矩陣 -->
   <depend>tf2</depend>
   <depend>tf2_ros</depend>

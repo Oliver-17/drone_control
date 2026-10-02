@@ -16,6 +16,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(px4_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -49,7 +50,7 @@ ament_target_dependencies(px4_tf_node
 
 add_executable(cmd_vel_to_px4_node src/cmd_vel_to_px4_node.cpp)
 ament_target_dependencies(cmd_vel_to_px4_node
-  rclcpp px4_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs)
+  rclcpp px4_msgs geometry_msgs std_srvs tf2 tf2_ros tf2_geometry_msgs)
 
 # S5 的小工具：把 RViz 的「2D Goal Pose」翻譯成呼叫 planner_server。
 # bt_navigator 上線（S6）之後就不需要它了。

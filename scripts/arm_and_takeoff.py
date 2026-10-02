@@ -17,9 +17,12 @@
 #      → 等爬到目標高度
 #      → 停止發布並退出，把 cmd_vel 讓給 Nav2
 #
-#      退出之後 PX4 會在約 0.5 秒內掉進 HOLD（原地懸停）——
-#      這是安全的。Nav2 一開始送 cmd_vel，cmd_vel_to_px4_node 會自己
-#      把模式切回 offboard。
+#      退出之後誰接手，看 cmd_vel_to_px4_node 的 hold_on_timeout：
+#          true （室內）橋接自己原地定點，offboard setpoint 不中斷
+#          false（室外）橋接銷毀 publisher，交給 PX4 的 failsafe
+#      ⚠️ 室內沒有全球位置，failsafe 的每一條出路都是下降（Hold 會降級成 Land、
+#         Position 的爬升率看油門桿而解鎖要求油門最低），所以室內一定要 true。
+#      兩種情況下 Nav2 一開始送 cmd_vel，cmd_vel_to_px4_node 都會接回去。
 #
 #  ⚠️ 它「不會」持續發零速度。持續發的話會跟 Nav2 的指令交錯，
 #     速度變成一半、而且會抖 —— 兩個發布者搶同一個 topic 的典型症狀。
@@ -171,8 +174,12 @@ class ArmAndTakeoff(Node):
         print()
         print("控制權交還。接下來：")
         print("  在 RViz 按「2D Goal Pose」點一個位置，Nav2 就會接手飛過去。")
-        print("  （這支停止發 cmd_vel 之後 PX4 會掉進 HOLD 原地懸停，")
-        print("    Nav2 一送指令 cmd_vel_to_px4_node 會自己切回 offboard。）")
+        print()
+        print("  這支停止發 cmd_vel 之後會發生什麼，取決於 cmd_vel_to_px4_node")
+        print("  的 hold_on_timeout：")
+        print("    true （室內）—— 橋接接手原地定點，setpoint 不中斷，飛機停在原處")
+        print("    false（室外）—— 橋接銷毀 publisher，PX4 走 failsafe")
+        print("  ⚠️ 室內（沒有全球位置）設 false 的話飛機會降落，不是懸停。")
         return 0
 
 

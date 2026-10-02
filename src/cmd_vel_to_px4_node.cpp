@@ -16,6 +16,17 @@
 //     所以這支「沒收到 cmd_vel 就完全不發布」—— 不是發零速度，是連 publisher 都收掉，
 //     這樣別人的 count_publishers 檢查才擋得住。
 //
+//  ⚠️ 室內（沒有全球位置）必須開 hold_on_timeout，否則交接時飛機會掉下來：
+//     銷毀 publisher 等於切斷 offboard setpoint 串流，PX4 一定觸發 failsafe，
+//     而室內每一條 failsafe 出路都是壞的 ——
+//         COM_OBL_RC_ACT=5 Hold     需要全球位置，室內沒有 → 降級成 Land
+//         COM_OBL_RC_ACT=0 Position 爬升率由油門桿決定，而解鎖要求油門在最低點 → 下降
+//         COM_OBL_RC_ACT=2/3        本來就是降落
+//     所以室內的正解不是「挑一個好的 failsafe」，是「不要讓 failsafe 發生」：
+//     逾時改成原地定點、setpoint 串流不斷，然後用 ~/release_hold 服務明確交棒。
+//     2026-10-02 實機實測了這個差別：舊行為下交接後飛機進 Position(2) + failsafe，
+//     五秒後自己上鎖落地。
+//
 // =============================================================================
 
 #include <algorithm>
@@ -26,6 +37,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist.hpp>
+#include <std_srvs/srv/trigger.hpp>
 #include <px4_msgs/msg/offboard_control_mode.hpp>
 #include <px4_msgs/msg/vehicle_command.hpp>
 #include <px4_msgs/msg/vehicle_status.hpp>
@@ -46,6 +58,12 @@ public:
     // 超過這個時間沒收到 cmd_vel 就視為「沒人在控制」，停止發布。
     // 0.5 秒的依據：Nav2 controller 預設 20 Hz，掉十幀才觸發，不會誤判。
     cmd_timeout_s_ = declare_parameter<double>("cmd_timeout_s", 0.5);
+    // 逾時之後要「原地定點」還是「銷毀 publisher 交還控制權」。
+    //
+    // 預設 false＝沿用原本的銷毀行為。模擬端的 T3 降落測試（t3_landing_flight.py:376）
+    // 依賴它才能接手，那條流程已經實飛驗過，不該被這個新功能動到。
+    // 實機（室內、沒有全球位置）要在 launch 裡傳 true —— 理由見檔頭的 failsafe 說明。
+    hold_on_timeout_ = declare_parameter<bool>("hold_on_timeout", false);
     max_speed_xy_ = declare_parameter<double>("max_speed_xy", 1.5);
     // 定高用的 P 增益與速度上限。不要設 1.0 —— 一次修到位會過衝然後來回震盪。
     kp_z_ = declare_parameter<double>("kp_z", 0.6);
@@ -92,6 +110,20 @@ public:
     command_pub_ = create_publisher<px4_msgs::msg::VehicleCommand>(
       ns + "/fmu/in/vehicle_command", pub_qos);
 
+    // 明確交棒用的服務。定點會一直佔著 trajectory_setpoint，而
+    // precision_land_node.cpp:387-391 看到 count_publishers > 1 就拒絕接手降落，
+    // 所以一定要有一個「我放手了」的入口，否則接降落會永遠卡死。
+    release_srv_ = create_service<std_srvs::srv::Trigger>(
+      "~/release_hold",
+      [this](const std_srvs::srv::Trigger::Request::SharedPtr,
+        std_srvs::srv::Trigger::Response::SharedPtr res) {
+        release_requested_ = true;
+        res->success = true;
+        res->message = holding_ ? "已要求放棄定點，下一輪釋放 publisher"
+          : "目前不在定點，已記錄：下次逾時直接釋放";
+        RCLCPP_WARN(get_logger(), "收到 release_hold：%s", res->message.c_str());
+      });
+
     const auto period = std::chrono::duration<double>(1.0 / publish_rate_hz_);
     timer_ = create_wall_timer(
       std::chrono::duration_cast<std::chrono::nanoseconds>(period),
@@ -107,8 +139,12 @@ private:
     RCLCPP_INFO(get_logger(), "  px4_namespace   : %s", px4_namespace_.c_str());
     RCLCPP_INFO(get_logger(), "  flight_altitude : %.2f m（Nav2 不管高度，由這裡鎖）",
       flight_altitude_);
-    RCLCPP_INFO(get_logger(), "  cmd_timeout     : %.2f s（逾時就停止發布）",
+    RCLCPP_INFO(get_logger(), "  cmd_timeout     : %.2f s（逾時後的動作見下一行）",
       cmd_timeout_s_);
+    RCLCPP_INFO(get_logger(), "  hold_on_timeout : %s",
+      hold_on_timeout_
+      ? "true（逾時後原地定點，setpoint 不斷 —— 室內用這個）"
+      : "false（逾時後銷毀 publisher 交還控制權 —— 室外／模擬用這個）");
     RCLCPP_INFO(get_logger(), "  發布頻率        : %.0f Hz", publish_rate_hz_);
     RCLCPP_INFO(get_logger(), "  等待 cmd_vel…（沒收到就完全不發布，不搶控制權）");
   }
@@ -130,23 +166,61 @@ private:
   {
     if (!has_cmd_ || !has_position_) {return;}
 
-    // 逾時就「完全停止發布」，而不是發零速度。
-    // 差別很重要：發零速度的話這個 publisher 一直存在，別人（例如降落節點）
-    // 用 count_publishers 檢查「還有沒有人在控制」時會誤判成有，直接拒絕接手。
-    if ((now() - last_cmd_time_).seconds() > cmd_timeout_s_) {
+    const bool timed_out = (now() - last_cmd_time_).seconds() > cmd_timeout_s_;
+
+    if (timed_out) {
+      // --- 路線 A：原地定點（室內）---
+      // setpoint 串流不中斷，PX4 不會觸發 failsafe。
+      if (hold_on_timeout_ && !release_requested_) {
+        if (was_publishing_ && !holding_) {
+          // 定點目標只在「進入定點的那一瞬間」抓一次。
+          // 每輪都更新成當下位置的話就變成「跟著漂移走」，等於沒有定點。
+          holding_ = true;
+          hold_x_ = local_position_.x;
+          hold_y_ = local_position_.y;
+          RCLCPP_WARN(get_logger(),
+            "超過 %.2f 秒沒收到 cmd_vel → 原地定點（北 %+.2f 東 %+.2f 高度 %.2f m "
+            "航向 %.0f°）。要交棒給別的節點請呼叫 ~/release_hold",
+            cmd_timeout_s_, hold_x_, hold_y_, flight_altitude_,
+            yaw_setpoint_ * 180.0 / M_PI);
+        }
+        if (holding_) {
+          publishOffboardControlMode(ControlLevel::Position);
+          publishHoldSetpoint();
+          ensureOffboard();
+        }
+        return;
+      }
+
+      // --- 路線 B：銷毀 publisher 交還控制權（模擬／室外，或被 release_hold 要求）---
       if (was_publishing_) {
         was_publishing_ = false;
-        // 真的把 publisher 收掉，count_publishers 才會歸零
+        holding_ = false;
+        // 真的把 publisher 收掉，count_publishers 才會歸零。
+        // 只停止送訊息是不夠的：Publisher 物件還在，別人（例如降落節點）
+        // 用 count_publishers 檢查「還有沒有人在控制」時會誤判成有，直接拒絕接手。
         setpoint_pub_.reset();
         offboard_mode_pub_.reset();
         RCLCPP_INFO(get_logger(),
-          "超過 %.2f 秒沒收到 cmd_vel，已銷毀 publisher，交還控制權",
-          cmd_timeout_s_);
+          "超過 %.2f 秒沒收到 cmd_vel，已銷毀 publisher，交還控制權%s",
+          cmd_timeout_s_,
+          release_requested_ ? "（release_hold 要求）" : "");
       }
       return;
     }
+
+    // 收到新指令 → 離開定點，回到速度控制。
+    // release_requested_ 也一起清掉：那是一次性的「這次交接請放手」，
+    // 不是永久關閉定點功能，否則呼叫過一次之後室內就再也沒有保護。
+    if (holding_) {
+      holding_ = false;
+      release_requested_ = false;
+      RCLCPP_INFO(get_logger(), "收到新的 cmd_vel，離開定點，回到速度控制");
+    }
+
     if (!was_publishing_) {
       was_publishing_ = true;
+      release_requested_ = false;
       offboard_mode_pub_ = create_publisher<px4_msgs::msg::OffboardControlMode>(
         offboard_mode_topic_, pub_qos_);
       setpoint_pub_ = create_publisher<px4_msgs::msg::TrajectorySetpoint>(
@@ -158,12 +232,16 @@ private:
         flight_altitude_, yaw_setpoint_ * 180.0 / M_PI);
     }
 
-    publishOffboardControlMode();
+    publishOffboardControlMode(ControlLevel::Velocity);
     publishSetpoint();
     ensureOffboard();
   }
 
-  void publishOffboardControlMode()
+  // PX4 的控制層級。OffboardControlMode 的那幾個布林是互斥的，
+  // 而定點和跟隨 cmd_vel 要的層級不同，所以用這個列舉明確標出來。
+  enum class ControlLevel { Velocity, Position };
+
+  void publishOffboardControlMode(ControlLevel level)
   {
     px4_msgs::msg::OffboardControlMode m{};
     // 這幾個布林是「互斥的控制層級」，只能有一個為 true。
@@ -175,8 +253,8 @@ private:
     //    改成「全速度控制、高度用自己的 P 控制器」之後就穩了 ——
     //    這也是 drone_apriltag_landing 的 precision_land_node 用的做法，
     //    那支在 T3 實飛驗證過。
-    m.position = false;
-    m.velocity = true;
+    m.position = (level == ControlLevel::Position);
+    m.velocity = (level == ControlLevel::Velocity);
     m.acceleration = false;
     m.attitude = false;
     m.body_rate = false;
@@ -257,6 +335,45 @@ private:
       -local_position_.z, flight_altitude_, yaw_setpoint_ * 180.0 / M_PI);
   }
 
+  // 原地定點：三軸全部用位置設定點。
+  //
+  // 為什麼不是「發零速度的 cmd_vel」：
+  //     零速度的意思是「把速度壓到零」，不是「回到原來的位置」。
+  //     水平沒有位置回授（publishSetpoint() 裡 sp.position 全是 NaN），
+  //     起飛傾角帶出去的位移就永遠不會被拉回來。
+  //     2026-10-02 實機實測：5.5 秒的懸停飄了約 1 公尺，而這段時間
+  //     水平指令一路都是 NED(北+0.00 東+0.00)。
+  //
+  // 為什麼三軸「全」用位置是安全的：
+  //     publishOffboardControlMode() 裡那個 ±3 m 振盪的警告，說的是
+  //     「水平速度 + 垂直位置」的混搭。三軸同一層級是另一回事 ——
+  //     drone_mocap 的 square_flight.py 就是純位置設定點，實機驗過會定住。
+  void publishHoldSetpoint()
+  {
+    px4_msgs::msg::TrajectorySetpoint sp{};
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+
+    // NED：z 下為正，所以離地 flight_altitude_ 就是 -flight_altitude_
+    sp.position = {static_cast<float>(hold_x_), static_cast<float>(hold_y_),
+      static_cast<float>(-flight_altitude_)};
+    sp.velocity = {nan, nan, nan};
+    sp.acceleration = {nan, nan, nan};
+    sp.jerk = {nan, nan, nan};
+    sp.yaw = static_cast<float>(yaw_setpoint_);
+    sp.yawspeed = 0.0f;
+    sp.timestamp = nowMicros();
+    setpoint_pub_->publish(sp);
+
+    const double dx = local_position_.x - hold_x_;
+    const double dy = local_position_.y - hold_y_;
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+      "定點中：目標(北%+.2f 東%+.2f 高%.2f)  實際(北%+.2f 東%+.2f 高%.2f)  "
+      "偏差 %.2f m",
+      hold_x_, hold_y_, flight_altitude_,
+      local_position_.x, local_position_.y, -local_position_.z,
+      std::hypot(dx, dy));
+  }
+
   // 確保飛機在 offboard 模式。
   //
   // 為什麼需要：這支是「有人送 cmd_vel 才接管」的設計，而在那之前 PX4
@@ -314,6 +431,10 @@ private:
   int target_system_{1}, offboard_retry_{0};
   px4_msgs::msg::VehicleStatus vehicle_status_;
   bool has_position_{false}, has_cmd_{false}, was_publishing_{false};
+  bool hold_on_timeout_{false};
+  bool holding_{false};             // 現在是不是在原地定點
+  bool release_requested_{false};   // 被要求放手（一次性，收到新 cmd_vel 就清掉）
+  double hold_x_{0.0}, hold_y_{0.0};   // 進入定點那一瞬間的位置（NED，公尺）
   double yaw_setpoint_{0.0};   // 自己維護的絕對航向目標（弧度，NED）
 
   geometry_msgs::msg::Twist last_cmd_;
@@ -323,6 +444,7 @@ private:
   rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr local_position_sub_;
   rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr vehicle_status_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr release_srv_;
   rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr command_pub_;
   rclcpp::Publisher<px4_msgs::msg::OffboardControlMode>::SharedPtr offboard_mode_pub_;
   rclcpp::Publisher<px4_msgs::msg::TrajectorySetpoint>::SharedPtr setpoint_pub_;
