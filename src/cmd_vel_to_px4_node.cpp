@@ -64,6 +64,23 @@ public:
     // 依賴它才能接手，那條流程已經實飛驗過，不該被這個新功能動到。
     // 實機（室內、沒有全球位置）要在 launch 裡傳 true —— 理由見檔頭的 failsafe 說明。
     hold_on_timeout_ = declare_parameter<bool>("hold_on_timeout", false);
+    // 「指令速度多小算是零」。小於這個值就改用位置控制把當下位置鎖住，
+    // 而不是老實地送一個零速度設定點。
+    //
+    // 為什麼需要：零速度的意思是「把速度壓到零」，不是「留在原地」。
+    // 水平沒有位置回授（publishSetpoint() 的 sp.position 全是 NaN），
+    // 已經產生的位移就永遠不會被討回來。
+    // 2026-10-02 實機：arm_and_takeoff.py 全程送零速度爬升，起飛點到
+    // 爬升完成飄了 1.30 m（Δ東 +1.26、Δ北 +0.32），方向大致朝機頭正前方。
+    //
+    // 門檻要小。Nav2 的 max_vel 是 0.3 m/s，設太大的話低速接近目標時會被
+    // 誤判成零而提前鎖死，再也不往前走。0.02 有十五倍餘裕。
+    //
+    // 預設 0.0 ＝關閉（任何值都不會小於 0，條件永遠不成立），行為和以前一模一樣。
+    // 理由跟 hold_on_timeout 一樣：模擬端那一整套（mission_node、T3 降落）是
+    // 用「零速度就是零速度」驗過的，不該被這個新行為默默改掉。
+    // 實機在 drone_bringup/config/real/px4_bridge.yaml 裡設 0.02 打開。
+    zero_cmd_deadband_ = declare_parameter<double>("zero_cmd_deadband", 0.0);
     max_speed_xy_ = declare_parameter<double>("max_speed_xy", 1.5);
     // 定高用的 P 增益與速度上限。不要設 1.0 —— 一次修到位會過衝然後來回震盪。
     kp_z_ = declare_parameter<double>("kp_z", 0.6);
@@ -145,6 +162,9 @@ private:
       hold_on_timeout_
       ? "true（逾時後原地定點，setpoint 不斷 —— 室內用這個）"
       : "false（逾時後銷毀 publisher 交還控制權 —— 室外／模擬用這個）");
+    RCLCPP_INFO(get_logger(),
+      "  zero_cmd_deadband: %.3f m/s（指令速度小於這個值就改用位置鎖住原地）",
+      zero_cmd_deadband_);
     RCLCPP_INFO(get_logger(), "  發布頻率        : %.0f Hz", publish_rate_hz_);
     RCLCPP_INFO(get_logger(), "  等待 cmd_vel…（沒收到就完全不發布，不搶控制權）");
   }
@@ -172,21 +192,20 @@ private:
       // --- 路線 A：原地定點（室內）---
       // setpoint 串流不中斷，PX4 不會觸發 failsafe。
       if (hold_on_timeout_ && !release_requested_) {
-        if (was_publishing_ && !holding_) {
-          // 定點目標只在「進入定點的那一瞬間」抓一次。
-          // 每輪都更新成當下位置的話就變成「跟著漂移走」，等於沒有定點。
-          holding_ = true;
-          hold_x_ = local_position_.x;
-          hold_y_ = local_position_.y;
+        if (was_publishing_ && !timeout_logged_) {
+          timeout_logged_ = true;
+          // holding_ 可能已經是 true —— 零指令路徑先鎖住了（起飛就是這種情況）。
+          // 那就沿用它抓到的點，不要重抓：重抓等於把「飄過去的位置」當成新目標。
+          if (!holding_) {enterHold();}
           RCLCPP_WARN(get_logger(),
-            "超過 %.2f 秒沒收到 cmd_vel → 原地定點（北 %+.2f 東 %+.2f 高度 %.2f m "
-            "航向 %.0f°）。要交棒給別的節點請呼叫 ~/release_hold",
+            "超過 %.2f 秒沒收到 cmd_vel → 維持原地定點（北 %+.2f 東 %+.2f "
+            "高度 %.2f m 航向 %.0f°）。要交棒給別的節點請呼叫 ~/release_hold",
             cmd_timeout_s_, hold_x_, hold_y_, flight_altitude_,
             yaw_setpoint_ * 180.0 / M_PI);
         }
         if (holding_) {
           publishOffboardControlMode(ControlLevel::Position);
-          publishHoldSetpoint();
+          publishHoldSetpoint(0.0);
           ensureOffboard();
         }
         return;
@@ -209,18 +228,13 @@ private:
       return;
     }
 
-    // 收到新指令 → 離開定點，回到速度控制。
-    // release_requested_ 也一起清掉：那是一次性的「這次交接請放手」，
-    // 不是永久關閉定點功能，否則呼叫過一次之後室內就再也沒有保護。
-    if (holding_) {
-      holding_ = false;
-      release_requested_ = false;
-      RCLCPP_INFO(get_logger(), "收到新的 cmd_vel，離開定點，回到速度控制");
-    }
+    // release_requested_ 是一次性的「這次交接請放手」，不是永久關閉定點功能
+    //（否則呼叫過一次之後室內就再也沒有保護）。有新指令就清掉。
+    timeout_logged_ = false;
+    release_requested_ = false;
 
     if (!was_publishing_) {
       was_publishing_ = true;
-      release_requested_ = false;
       offboard_mode_pub_ = create_publisher<px4_msgs::msg::OffboardControlMode>(
         offboard_mode_topic_, pub_qos_);
       setpoint_pub_ = create_publisher<px4_msgs::msg::TrajectorySetpoint>(
@@ -232,9 +246,48 @@ private:
         flight_altitude_, yaw_setpoint_ * 180.0 / M_PI);
     }
 
-    publishOffboardControlMode(ControlLevel::Velocity);
-    publishSetpoint();
+    // 先把 cmd_vel 轉成世界 NED，才知道「這個指令到底是不是零」。
+    // 不能只看 linear.x/y —— 夾速限之後的值才是真正要送出去的東西。
+    double v_north = 0.0, v_east = 0.0, yawspeed = 0.0;
+    cmdToNed(v_north, v_east, yawspeed);
+
+    // 航向目標不管走哪個層級都要積分，否則切換的瞬間會跳回舊值猛轉。
+    yaw_setpoint_ = wrapPi(yaw_setpoint_ + yawspeed / publish_rate_hz_);
+
+    // 水平指令是零 → 改用位置控制把當下位置鎖住。
+    // 只看水平：原地轉頭（linear 全零、angular.z 不為零）也該鎖住位置，
+    // 轉頭的部分由 sp.yaw / sp.yawspeed 處理。
+    const bool zero_cmd = std::abs(v_north) < zero_cmd_deadband_ &&
+      std::abs(v_east) < zero_cmd_deadband_;
+
+    if (zero_cmd) {
+      if (!holding_) {
+        enterHold();
+        RCLCPP_INFO(get_logger(),
+          "水平指令是零 → 位置鎖在（北 %+.2f 東 %+.2f 高度 %.2f m）",
+          hold_x_, hold_y_, flight_altitude_);
+      }
+      publishOffboardControlMode(ControlLevel::Position);
+      publishHoldSetpoint(yawspeed);
+    } else {
+      if (holding_) {
+        holding_ = false;
+        RCLCPP_INFO(get_logger(), "收到非零的水平指令，離開定點，回到速度控制");
+      }
+      publishOffboardControlMode(ControlLevel::Velocity);
+      publishVelocitySetpoint(v_north, v_east, yawspeed);
+    }
     ensureOffboard();
+  }
+
+  // 抓住「現在這一點」當成定點目標。
+  // 只在進入定點的那一瞬間呼叫一次 —— 每輪都更新的話就變成跟著漂移走，
+  // 等於沒有定點。
+  void enterHold()
+  {
+    holding_ = true;
+    hold_x_ = local_position_.x;
+    hold_y_ = local_position_.y;
   }
 
   // PX4 的控制層級。OffboardControlMode 的那幾個布林是互斥的，
@@ -262,7 +315,10 @@ private:
     offboard_mode_pub_->publish(m);
   }
 
-  void publishSetpoint()
+  // cmd_vel（機體 FLU）-> 世界 NED 速度 + PX4 的 yawspeed。
+  // 從 publishSetpoint() 拆出來，是因為 loop() 要先知道「轉換＋夾速限之後的值」
+  // 才能判斷這個指令算不算零 —— 只看 linear.x/y 判斷是不準的。
+  void cmdToNed(double & v_north, double & v_east, double & yawspeed)
   {
     // --- 機體 FLU -> 世界 NED ---
     // Nav2 的 cmd_vel 是「機體座標系」，而且用 ROS 慣例 FLU（x 前 / y 左）。
@@ -275,8 +331,8 @@ private:
     const double vy_frd = -last_cmd_.linear.y;
     const double h = local_position_.heading;
 
-    double v_north = vx_frd * std::cos(h) - vy_frd * std::sin(h);
-    double v_east = vx_frd * std::sin(h) + vy_frd * std::cos(h);
+    v_north = vx_frd * std::cos(h) - vy_frd * std::sin(h);
+    v_east = vx_frd * std::sin(h) + vy_frd * std::cos(h);
 
     // 安全上限。Nav2 的參數理論上已經限速，但這裡再夾一次 ——
     // 參數填錯或別人誤發一個大數值時，這是最後一道防線。
@@ -289,8 +345,11 @@ private:
 
     // ROS 的 angular.z 是「繞上軸、逆時針為正」，
     // PX4 的 yawspeed 是「繞下軸、順時針為正」—— 方向相反，要變號。
-    const double yawspeed = clampAbs(-last_cmd_.angular.z, max_yawspeed_);
+    yawspeed = clampAbs(-last_cmd_.angular.z, max_yawspeed_);
+  }
 
+  void publishVelocitySetpoint(double v_north, double v_east, double yawspeed)
+  {
     // ⚠️ 只送 yawspeed、把 yaw 留 NaN 是不行的。
     //    PX4 的位置控制器在 yaw 為 NaN 時，會每一輪把「目標航向」設成「當下航向」：
     //        PositionControl.cpp:117
@@ -301,8 +360,8 @@ private:
     //
     //    所以這裡自己積分出一個絕對航向目標：不轉的時候它是固定值 = 真正的定向，
     //    要轉的時候才跟著動。yawspeed 仍然照送，當作前饋讓轉動跟手。
-    const double dt = 1.0 / publish_rate_hz_;
-    yaw_setpoint_ = wrapPi(yaw_setpoint_ + yawspeed * dt);
+    //    （積分本身在 loop() 做 —— 位置鎖住的時候也要跟著積，否則切換回速度
+    //      控制的瞬間會跳回舊值猛轉。）
 
     // 垂直：用 P 控制器把高度拉回目標，而不是給位置 setpoint。
     // NED 的 z 是「下為正」，所以離地高度 = -z。
@@ -348,7 +407,7 @@ private:
   //     publishOffboardControlMode() 裡那個 ±3 m 振盪的警告，說的是
   //     「水平速度 + 垂直位置」的混搭。三軸同一層級是另一回事 ——
   //     drone_mocap 的 square_flight.py 就是純位置設定點，實機驗過會定住。
-  void publishHoldSetpoint()
+  void publishHoldSetpoint(double yawspeed)
   {
     px4_msgs::msg::TrajectorySetpoint sp{};
     const float nan = std::numeric_limits<float>::quiet_NaN();
@@ -360,7 +419,9 @@ private:
     sp.acceleration = {nan, nan, nan};
     sp.jerk = {nan, nan, nan};
     sp.yaw = static_cast<float>(yaw_setpoint_);
-    sp.yawspeed = 0.0f;
+    // 原地轉頭（水平零、angular.z 不為零）也會走到這裡，所以 yawspeed 要照送
+    // 當前饋，不能寫死 0 —— 否則轉動會明顯拖。
+    sp.yawspeed = static_cast<float>(yawspeed);
     sp.timestamp = nowMicros();
     setpoint_pub_->publish(sp);
 
@@ -434,6 +495,8 @@ private:
   bool hold_on_timeout_{false};
   bool holding_{false};             // 現在是不是在原地定點
   bool release_requested_{false};   // 被要求放手（一次性，收到新 cmd_vel 就清掉）
+  bool timeout_logged_{false};      // 逾時訊息只印一次，不要每輪洗畫面
+  double zero_cmd_deadband_{0.02};  // 指令速度小於這個值就當成零（m/s）
   double hold_x_{0.0}, hold_y_{0.0};   // 進入定點那一瞬間的位置（NED，公尺）
   double yaw_setpoint_{0.0};   // 自己維護的絕對航向目標（弧度，NED）
 
