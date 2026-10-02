@@ -38,10 +38,18 @@ from px4_msgs.msg import VehicleCommand, VehicleLocalPosition, VehicleStatus
 
 
 class ArmAndTakeoff(Node):
-    def __init__(self, ns, altitude, target_system):
+    def __init__(self, ns, altitude, target_system,
+                 tolerance=0.08, vz_tolerance=0.05, stable_count=6, timeout=90.0):
         super().__init__("arm_and_takeoff")
         self.altitude = altitude
         self.ts = target_system
+        # 「到底算不算到了」的判定門檻。做成參數是因為不同高度該用不同的值 ——
+        # 室內飛 0.5 m 和室外飛 3 m，0.2 m 的誤差意義完全不同（40% vs 7%）。
+        self.tolerance = tolerance
+        self.vz_tolerance = vz_tolerance
+        self.stable_count = stable_count
+        # 逾時要留足夠裕度：門檻收緊之後收斂變慢，而逾時代表「腳本退出但飛機還在空中」
+        self.timeout = timeout
         self.pos = None
         self.status = None
 
@@ -127,22 +135,36 @@ class ArmAndTakeoff(Node):
 
         # cmd_vel_to_px4_node 收到零速度就會把高度鎖在它的 flight_altitude，
         # 所以「什麼都不做」就會自己爬上去。
-        end = time.time() + 60
+        # ⚠️ 門檻不能太寬。高度是 P 控制器（kp_z 預設 0.6），速度指令 = 0.6 × 誤差，
+        #    所以「越接近目標速度越慢」—— 誤差 0.2 m 時速度才 0.12 m/s。
+        #    舊版用 0.2 m / 0.2 m/s，兩個條件在飛機**還在爬的半路**就同時成立，
+        #    連續判定幾次都沒用（它根本不會再跳出門檻）。
+        #    2026-10-01 實機：目標 0.5 m，飛機爬到 0.31 m 就被判定「已懸停」，
+        #    離地才兩秒腳本就退出，之後沒人控制 → 飄移 + 失效保護降落。
+        #    現在的預設（0.08 m / 0.05 m/s）用同一條公式驗算：
+        #    誤差 0.08 → 速度指令 0.048 m/s，剛好在門檻內，所以兩個條件
+        #    會在「真的快停住」時才一起成立。
+        end = time.time() + self.timeout
         stable = 0
         while time.time() < end:
             self.hold(0.5)
-            if abs(-self.pos.z - self.altitude) < 0.2 and abs(self.pos.vz) < 0.2:
+            err = abs(-self.pos.z - self.altitude)
+            if err < self.tolerance and abs(self.pos.vz) < self.vz_tolerance:
                 stable += 1
-                if stable >= 4:
+                if stable >= self.stable_count:
                     break
             else:
                 stable = 0
-            print(f"  高度 {-self.pos.z:5.2f} / {self.altitude:.1f} m", end="\r")
+            print(f"  高度 {-self.pos.z:5.2f} / {self.altitude:.2f} m"
+                  f"   誤差 {err:4.2f}   vz {self.pos.vz:+5.2f} m/s"
+                  f"   穩定 {stable}/{self.stable_count}  ", end="\r")
         print()
-        if stable < 4:
-            print(f"✗ 60 秒內沒穩定在 {self.altitude} m"
-                  f"（目前 {-self.pos.z:.2f} m）")
+        if stable < self.stable_count:
+            print(f"✗ {self.timeout:.0f} 秒內沒穩定在 {self.altitude} m"
+                  f"（目前 {-self.pos.z:.2f} m、誤差門檻 {self.tolerance} m）")
             print("  確認 cmd_vel_to_px4_node 的 flight_altitude 和這裡一致")
+            print("  如果高度卡在某個值收斂不到門檻，就放寬 --tolerance")
+            print("  ⚠️ 飛機現在還在空中，而這支已經不再送 cmd_vel —— 用遙控器接手")
             return 1
 
         print(f"✓ 已懸停在 {-self.pos.z:.2f} m")
@@ -161,10 +183,20 @@ def main():
                     help="要和 cmd_vel_to_px4_node 的 flight_altitude 一致")
     ap.add_argument("--target-system", type=int, default=1,
                     help="多機時是 instance+1")
+    ap.add_argument("--tolerance", type=float, default=0.08,
+                    help="高度誤差在這個值以內才算到位（公尺）")
+    ap.add_argument("--vz-tolerance", type=float, default=0.05,
+                    help="垂直速度在這個值以內才算穩定（m/s）")
+    ap.add_argument("--stable-count", type=int, default=6,
+                    help="要連續幾次都通過才算數（0.5 秒一次，6 次 = 3 秒）")
+    ap.add_argument("--timeout", type=float, default=90.0,
+                    help="等多久就放棄（秒）。逾時的話飛機還在空中，要用遙控器接手")
     args, _ = ap.parse_known_args()
 
     rclpy.init()
-    node = ArmAndTakeoff(args.ns, args.altitude, args.target_system)
+    node = ArmAndTakeoff(args.ns, args.altitude, args.target_system,
+                         args.tolerance, args.vz_tolerance, args.stable_count,
+                         args.timeout)
     try:
         rc = node.run()
     except KeyboardInterrupt:
